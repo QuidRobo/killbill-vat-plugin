@@ -80,9 +80,18 @@ public class VatTaxCalculator extends PluginTaxCalculator {
                 continue;
             }
 
-            final PriceMode priceMode = config.getPriceMode(taxable.getPlanName(), taxable.getProductName());
             final VatTreatment treatment = runtime.getResolver().resolve(
                     request(customer, taxable, invoice));
+
+            final boolean adjusted = adjustments != null && !adjustments.isEmpty();
+            final PriceMode configuredMode =
+                    config.getPriceMode(taxable.getPlanName(), taxable.getProductName());
+            final PriceMode priceMode = effectivePriceMode(configuredMode, adjusted);
+            if (priceMode != configuredMode) {
+                logger.warn("Item {} is priced VAT-inclusive but already carries adjustments;"
+                            + " leaving its amount at {} and charging VAT on top instead",
+                            taxable.getId(), taxable.getAmount());
+            }
 
             logger.debug("VAT for item {} ({}): {} priceMode={}",
                          taxable.getId(), taxable.getPlanName(), treatment, priceMode);
@@ -102,19 +111,29 @@ public class VatTaxCalculator extends PluginTaxCalculator {
             }
 
             if (priceMode == PriceMode.INCLUSIVE && split.requiresRewrite(taxable.getAmount())) {
-                if (adjustments != null && !adjustments.isEmpty()) {
-                    // Rewriting an item that already carries adjustments would silently change
-                    // what those adjustments were computed against. Leave it alone and say so.
-                    logger.warn("Item {} is priced VAT-inclusive but already carries adjustments;"
-                                + " leaving its amount at {} and charging VAT on top instead",
-                                taxable.getId(), taxable.getAmount());
-                } else {
-                    additionalItems.add(withAmount(taxable, split.getNet()));
-                }
+                // Logged at INFO because the plugin cannot see whether Kill Bill actually applied
+                // the rewrite. If it were ever dropped, the invoice would keep the gross charge
+                // AND the tax item, and this line is the only way to spot that afterwards.
+                logger.info("Rewriting VAT-inclusive item {} from {} to net {}, tax {}",
+                            taxable.getId(), taxable.getAmount(), split.getNet(), split.getVat());
+                additionalItems.add(withAmount(taxable, split.getNet()));
             }
         }
 
         return additionalItems;
+    }
+
+    /**
+     * The price mode actually used, which is not always the configured one.
+     *
+     * Rewriting an item that already carries adjustments would silently change what those
+     * adjustments were computed against, so the rewrite is off for an adjusted item. The split has
+     * to switch with it: extracting VAT out of the gross while leaving the charge line gross
+     * produced a tax amount matching no rate and a total matching nothing at all. Charging on top
+     * is the behaviour the warning had always claimed, and now the behaviour it describes.
+     */
+    static PriceMode effectivePriceMode(final PriceMode configured, final boolean itemIsAdjusted) {
+        return configured == PriceMode.INCLUSIVE && itemIsAdjusted ? PriceMode.EXCLUSIVE : configured;
     }
 
     private VatTreatmentRequest request(final CustomerProfile customer,
@@ -124,7 +143,6 @@ public class VatTaxCalculator extends PluginTaxCalculator {
                                   .customerCountry(customer.getTaxCountry())
                                   .customerVatNumber(customer.getVatNumber())
                                   .customerVatNumberValidated(customer.isVatNumberValidated())
-                                  .business(customer.isBusiness())
                                   .planName(taxable.getPlanName())
                                   .productName(taxable.getProductName())
                                   .taxPoint(taxPoint(taxable, invoice))

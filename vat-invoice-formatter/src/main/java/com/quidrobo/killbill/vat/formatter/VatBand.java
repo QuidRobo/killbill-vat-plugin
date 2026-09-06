@@ -44,14 +44,6 @@ public class VatBand {
         return description;
     }
 
-    public BigDecimal getNetAmount() {
-        return netAmount;
-    }
-
-    public BigDecimal getVatAmount() {
-        return vatAmount;
-    }
-
     /** Rate derived from the amounts, since AvaTax does not put the percentage on the item. */
     public String getFormattedRate() {
         return VatInvoiceFormatter.VatMoney.ratePercent(netAmount, vatAmount);

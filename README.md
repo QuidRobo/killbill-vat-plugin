@@ -77,10 +77,14 @@ independently lets them disagree by a penny: on 9.99 at 20% that would produce 8
 - **EU B2C** at the customer's own country rate, ready for OSS.
 - **Rest of world** driven by data: until a registration exists for a country, supplies there are
   outside scope. Adding Norway is a config line, not a release.
-- **Offline VAT number validation**: structure for every EU country plus GB, with check digits
-  implemented for GB, DE, IT, NL and FR.
+- **VAT number handling** that defers to whoever owns the customer record. See
+  [Where validation belongs](#where-validation-belongs) below, because this is the part people get
+  wrong.
 - **VAT-compliant invoices** via a companion `InvoiceFormatterFactory` bundle that supplies the
   net/VAT/gross totals and per-line VAT rate that a logic-less Mustache template cannot compute.
+- **Diagnostics that answer "what would you charge, and why"** before you bill anyone: a config
+  read-back that lists everything wrong with your configuration, and a simulate endpoint that
+  returns the treatment, the rate and the reasoning for a hypothetical customer.
 
 ## Design decisions worth knowing
 
@@ -99,6 +103,53 @@ until someone notices.
 **Every treatment carries a reason.** When a tax authority asks in three years why an invoice
 carried no VAT, "outside scope, customer country US, no registration for US on that date" is an
 answer. A bare 0% is not.
+
+**A configured rate is not authority to charge it.** `ossRegistered` defaults to false, and until
+it is deliberately turned on an EU consumer will not be charged their own country rate even if you
+have configured one. Collecting German VAT with no One Stop Shop registration means collecting tax
+you have no mechanism to remit, which is worse than not charging it.
+
+## Where validation belongs
+
+**This plugin does not call VIES, and in its intended production configuration it does no VAT
+number checking at all.** That is deliberate, and it is the single most important thing to
+understand before wiring it up.
+
+Validation belongs in whatever system owns the customer record, for three reasons:
+
+1. It is the only layer that cannot be bypassed. A browser check is a convenience.
+2. It can call VIES **asynchronously**. An invoice run that waits on the Commission's SOAP service
+   fails whenever they have a bad afternoon, and they have them.
+3. It is where the audit trail lives: which number, checked when, and with what answer.
+
+So the plugin reads two account custom fields and trusts them:
+
+| Custom field | Meaning |
+|---|---|
+| `customerVatNumber` | The registration number |
+| `customerVatNumberValidatedAt` | When it last passed an external check |
+
+`vatNumberValidation` controls how much proof is demanded:
+
+- **`EXTERNAL`** (use this in production): the plugin checks nothing itself. A missing or stale
+  `customerVatNumberValidatedAt` means no reverse charge, and VAT is charged. Over-collecting is a
+  refund; under-collecting is a liability the supplier carries.
+- **`CHECKSUM`**: for adopters with no such system in front of Kill Bill. The plugin then does its
+  own structural and check-digit validation offline, covering every EU country plus GB and XI, with
+  check digits for GB, DE, IT, NL and FR. Well-formed is not the same as registered, so this is a
+  typo filter, not proof.
+- **`NONE`**: development only.
+
+### Two things that surprise people about VIES
+
+**A UK supplier cannot obtain a consultation number.** VIES issues its `requestIdentifier`, the
+thing that actually proves in an audit that you checked, only to requesters that are themselves EU
+VAT registered. GB left that scheme with Brexit. You still get a valid/invalid answer, but your
+audit trail is your own dated record of the request and the reply.
+
+**GB numbers are not in VIES at all** and cannot be checked through it. HMRC runs a separate
+service. For a UK supplier this costs nothing, since a GB customer is domestic and pays UK VAT
+regardless of registration.
 
 ## Configuring it, and knowing that you did
 
@@ -129,7 +180,7 @@ So the plugin serves three read-only endpoints under `/plugins/killbill-vat/`.
 invoice:
 
 ```
-/plugins/killbill-vat/simulate?country=DE&vatNumber=DE811234567&validated=true&amount=120.00
+/plugins/killbill-vat/simulate?country=DE&vatNumber=DE136695976&validated=true&amount=120.00
 ```
 
 ```json
@@ -138,7 +189,7 @@ invoice:
     "treatment": "REVERSE_CHARGE",
     "rate": 0,
     "invoiceLegend": "Reverse charge: VAT to be accounted for by the recipient.",
-    "reason": "validated VAT number DE811234567 in DE"
+    "reason": "validated VAT number DE136695976 in DE"
   },
   "amounts": { "net": 120.00, "vat": 0.00, "gross": 120.00 }
 }
@@ -189,7 +240,15 @@ Kill Bill configuration:
 org.killbill.template.invoiceFormatterFactoryPluginName=killbill-vat-formatter
 org.killbill.osgi.system.bundle.export.packages.extra=org.killbill.billing.invoice.template.formatters
 org.killbill.template.invoice.defaultLocale=en_GB
+
+# The formatter reads account custom fields, and Kill Bill 0.24.x hands it no tenant context.
+org.killbill.billing.plugin.vat.formatter.tenantId=<your tenant id>
+org.killbill.billing.plugin.vat.formatter.supplierCountry=GB
 ```
+
+Without `formatter.tenantId` the formatter cannot read the account, so it suppresses the VAT
+treatment legend and the customer VAT number rather than guessing at them. It will not print a
+domestic zero-rating notice on what is really a reverse-charge invoice.
 
 The `export.packages.extra` line is **mandatory and easy to miss**. `DefaultInvoiceFormatter`
 lives in a core package that is not exported to OSGi bundles by default, so the import falls
@@ -218,29 +277,52 @@ Kill Bill's `Account` has no VAT number field, so the B2B facts live in account 
 |---|---|
 | `customerVatNumber` | The registration number, any format |
 | `customerVatNumberValidatedAt` | ISO date of the last successful external check |
-| `customerIsBusiness` | Explicit B2B flag for businesses that are not VAT registered |
 | `customerTaxCountry` | Overrides the billing country for place of supply |
+
+There is deliberately no "is a business" flag. What makes a supply B2B for VAT is a valid
+registration number, not a self-declared status, and a checkbox anyone can tick is not evidence
+any tax authority accepts.
 
 ## Tests
 
-The pure logic (price modes, rate resolution, treatment decisions, VAT number checks) has no Kill
-Bill dependencies and is covered by 76 assertions. Because the build needs Maven Central and some
-environments cannot reach it, there is also an offline check that compiles the whole plugin
-against hand-written API stubs and runs the assertions with nothing but a JDK:
+The pure logic (price modes, rate resolution, treatment decisions, configuration diagnostics, VAT
+number checks) has no Kill Bill dependencies, so it is tested directly:
+
+```bash
+mvn test
+```
+
+Because the build needs Maven Central and some environments cannot reach it, there is also an
+offline check that compiles the whole plugin against hand-written API stubs and runs **the same
+test classes** with nothing but a JDK:
 
 ```bash
 dev/offline-check/run.sh
 ```
 
-That is a compile and logic check, not a substitute for building against the real jars.
+That is a compile and logic check, not a substitute for building against the real jars: the stubs
+mirror the API signatures, not the behaviour behind them.
+
+Two things the tests deliberately do not cover, because both need a running Kill Bill rather than
+a mock that would only assert what this plugin already believes:
+
+- **The in-place amount rewrite** that makes VAT-inclusive pricing work. It follows from Kill
+  Bill's field classification, but no core test exercises it. Verify it on your own server before
+  you rely on it, and watch for the `Rewriting VAT-inclusive item` log line.
+- **Invoice rendering.** Install the formatter, render an invoice in each of the four treatments,
+  and check net + VAT equals the total.
 
 ## Roadmap
 
 1. ✅ Rates, price modes, treatment resolution, invoice formatter
-2. VIES client with caching, stored consultation numbers and a review queue for the down case
-3. Database-backed rates and registrations, replacing config
-4. Persisted tax state, so adjustments and credits refund VAT correctly
-5. REST endpoints for rates, registrations and location evidence
+2. ✅ Config read-back, simulate and healthcheck endpoints
+3. An **optional** in-plugin VIES client, for adopters with no system upstream of Kill Bill to do
+   it. Everyone else should validate where the customer record lives, and set `EXTERNAL`. Whoever
+   builds this: make the call asynchronous and cached, never inside `getAdditionalInvoiceItems`,
+   and treat an unreachable service as "unknown" rather than "invalid" so a Commission outage does
+   not strip the reverse charge from legitimate customers.
+4. Database-backed rates and registrations, replacing config
+5. Persisted tax state, so adjustments and credits refund VAT correctly
 6. EU B2C location evidence reconciliation (two non-contradictory pieces)
 
 Known limitations are listed in [docs/CONFIGURATION.md](docs/CONFIGURATION.md#known-limitations).

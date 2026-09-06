@@ -26,12 +26,6 @@ public final class VatCustomFields {
     public static final String CUSTOMER_VAT_NUMBER_VALIDATED_AT = "customerVatNumberValidatedAt";
 
     /**
-     * Optional explicit B2B flag ("true"/"false"). A validated VAT number is the strong signal;
-     * this is for customers who are businesses but are not VAT registered.
-     */
-    public static final String CUSTOMER_IS_BUSINESS = "customerIsBusiness";
-
-    /**
      * Optional override of the country used for the place of supply, when the billing address
      * country is not the right answer.
      */

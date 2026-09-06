@@ -100,7 +100,34 @@ public final class VatNumberFormat {
         if (!STRUCTURE.get(country).matcher(body).matches()) {
             return false;
         }
+        if (isAllZeroDigits(body)) {
+            // GB000000000, IT00000000000 and NL000000000B01 all satisfy their national check
+            // digits. Arithmetic cannot distinguish a valid number from a placeholder, so an
+            // all-zero body is rejected explicitly.
+            return false;
+        }
         return checkDigits(country, body);
+    }
+
+    /**
+     * Whether every digit in the body is zero, ignoring the fixed letters some formats carry.
+     *
+     * Testing the raw body would let NL000000000B01 through, because the B is not a zero. That is
+     * exactly the number somebody types to get past a required field, and it passes the Dutch
+     * check digit.
+     */
+    private static boolean isAllZeroDigits(final String body) {
+        boolean sawDigit = false;
+        for (int i = 0; i < body.length(); i++) {
+            final char c = body.charAt(i);
+            if (c >= '1' && c <= '9') {
+                return false;
+            }
+            if (c == '0') {
+                sawDigit = true;
+            }
+        }
+        return sawDigit;
     }
 
     /**

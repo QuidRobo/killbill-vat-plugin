@@ -294,14 +294,31 @@ public final class VatConfig {
             if (!prefixed) {
                 found.add("Unrecognised property '" + rawKey + "'. It is being ignored;"
                           + " check the spelling against docs/CONFIGURATION.md.");
-            } else if (key.startsWith("rates.")
-                       && VatRateTable.parseRate(p.getProperty(rawKey)) == null
-                       && !key.endsWith(".from") && !key.endsWith(".to")) {
-                found.add("Rate '" + rawKey + "' = '" + p.getProperty(rawKey)
-                          + "' could not be read. Write a fraction (0.20) or a percentage (20%);"
-                          + " a bare number greater than 1 is rejected as ambiguous.");
+            } else if (key.startsWith("rates.")) {
+                // A key under rates. that matches neither shape is dropped by the parser. Saying
+                // "it is prefixed, therefore fine" was the hole that let rates.GBR.standard and
+                // rates.GB.standard.0.rat vanish without a word.
+                if (!VatRateTable.isRecognisedRateKey(key)) {
+                    found.add("Property '" + rawKey + "' is not a usable rate key, so it is being"
+                              + " ignored. Expected 'rates.<CC>.<kind>' or"
+                              + " 'rates.<CC>.<kind>.<n>.rate|from|to' with a two-letter country.");
+                } else if (!key.endsWith(".from") && !key.endsWith(".to")
+                           && VatRateTable.parseRate(p.getProperty(rawKey)) == null) {
+                    found.add("Rate '" + rawKey + "' = '" + p.getProperty(rawKey)
+                              + "' could not be read. Write a fraction (0.20) or a percentage (20%);"
+                              + " a bare number, a negative, or 100% or more is rejected.");
+                }
+            } else if ((key.startsWith("priceMode.plans.") || key.startsWith("priceMode.products."))
+                       && PriceMode.parse(p.getProperty(rawKey), null) == null) {
+                // A one-letter typo here (INCLUSIV) silently reverted a plan to EXCLUSIVE and
+                // charged 20% on top of an already-inclusive price.
+                found.add("Price mode '" + rawKey + "' = '" + p.getProperty(rawKey)
+                          + "' is not INCLUSIVE or EXCLUSIVE, so it is being ignored and the"
+                          + " tenant default applies.");
             }
         }
+
+        found.addAll(rateTable.findOverlaps());
 
         if (rateTable.all().isEmpty()) {
             found.add("No VAT rates are configured, so every supply resolves to OUTSIDE_SCOPE"
@@ -336,6 +353,17 @@ public final class VatConfig {
         } else if (vatNumberValidation == VatNumberValidationMode.CHECKSUM) {
             found.add("vatNumberValidation is CHECKSUM, which proves the number is well formed but"
                       + " not that the registration exists. Use EXTERNAL in production.");
+        }
+
+        final String configuredMode = get(p, ROUNDING_MODE, "HALF_UP");
+        try {
+            if (!SYMMETRIC_ROUNDING.contains(RoundingMode.valueOf(configuredMode.trim().toUpperCase()))) {
+                found.add("rounding.mode '" + configuredMode + "' is not symmetric about zero, so a"
+                          + " credit would not reverse the VAT its sale charged. Using HALF_UP."
+                          + " Allowed: HALF_UP, HALF_DOWN, HALF_EVEN.");
+            }
+        } catch (final RuntimeException e) {
+            found.add("rounding.mode '" + configuredMode + "' is not a rounding mode. Using HALF_UP.");
         }
 
         if (roundingScale < 0 || roundingScale > 6) {
@@ -387,9 +415,23 @@ public final class VatConfig {
         }
     }
 
+    /**
+     * Only the modes that are symmetric about zero are accepted.
+     *
+     * Two reasons. UNNECESSARY throws on any amount that actually needs rounding, and the
+     * calculator's failure path swallows that into "no tax items", so a single config word turned
+     * VAT off on every invoice while the healthcheck stayed green. And FLOOR, CEILING, UP and DOWN
+     * round a credit the opposite way to the sale it reverses: sell at 9.99 under FLOOR and fully
+     * credit it, and you are left holding a penny of VAT that belongs to nobody.
+     */
+    private static final Set<RoundingMode> SYMMETRIC_ROUNDING = Collections.unmodifiableSet(
+            new LinkedHashSet<RoundingMode>(
+                    Arrays.asList(RoundingMode.HALF_UP, RoundingMode.HALF_DOWN, RoundingMode.HALF_EVEN)));
+
     private static RoundingMode readRoundingMode(final String value) {
         try {
-            return RoundingMode.valueOf(value.trim().toUpperCase());
+            final RoundingMode mode = RoundingMode.valueOf(value.trim().toUpperCase());
+            return SYMMETRIC_ROUNDING.contains(mode) ? mode : RoundingMode.HALF_UP;
         } catch (final RuntimeException e) {
             return RoundingMode.HALF_UP;
         }

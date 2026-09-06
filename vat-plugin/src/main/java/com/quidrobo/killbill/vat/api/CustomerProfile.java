@@ -37,16 +37,13 @@ public final class CustomerProfile {
     private final String taxCountry;
     private final String vatNumber;
     private final boolean vatNumberValidated;
-    private final boolean business;
 
     private CustomerProfile(final String taxCountry,
                             final String vatNumber,
-                            final boolean vatNumberValidated,
-                            final boolean business) {
+                            final boolean vatNumberValidated) {
         this.taxCountry = taxCountry;
         this.vatNumber = vatNumber;
         this.vatNumberValidated = vatNumberValidated;
-        this.business = business;
     }
 
     public static CustomerProfile load(final Account account,
@@ -55,7 +52,6 @@ public final class CustomerProfile {
                                        final TenantContext context) {
         String vatNumber = null;
         String validatedAt = null;
-        String isBusiness = null;
         String taxCountryOverride = null;
 
         try {
@@ -68,8 +64,6 @@ public final class CustomerProfile {
                         vatNumber = field.getFieldValue();
                     } else if (VatCustomFields.CUSTOMER_VAT_NUMBER_VALIDATED_AT.equalsIgnoreCase(name)) {
                         validatedAt = field.getFieldValue();
-                    } else if (VatCustomFields.CUSTOMER_IS_BUSINESS.equalsIgnoreCase(name)) {
-                        isBusiness = field.getFieldValue();
                     } else if (VatCustomFields.CUSTOMER_TAX_COUNTRY.equalsIgnoreCase(name)) {
                         taxCountryOverride = field.getFieldValue();
                     }
@@ -92,10 +86,7 @@ public final class CustomerProfile {
         return new CustomerProfile(country == null || country.trim().isEmpty()
                                    ? null : country.trim().toUpperCase(),
                                    normalised,
-                                   validated,
-                                   parseBoolean(isBusiness) || normalised != null
-                                   || (account.getCompanyName() != null
-                                       && !account.getCompanyName().trim().isEmpty()));
+                                   validated);
     }
 
     /**
@@ -152,14 +143,6 @@ public final class CustomerProfile {
 
     public boolean isVatNumberValidated() {
         return vatNumberValidated;
-    }
-
-    public boolean isBusiness() {
-        return business;
-    }
-
-    private static boolean parseBoolean(final String value) {
-        return value != null && "true".equalsIgnoreCase(value.trim());
     }
 
     private static LocalDate parseDate(final String value) {

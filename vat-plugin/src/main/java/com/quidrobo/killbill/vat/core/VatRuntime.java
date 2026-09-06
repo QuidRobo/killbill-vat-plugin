@@ -48,10 +48,6 @@ public final class VatRuntime {
         return config;
     }
 
-    public VatRateSource getRateSource() {
-        return rateSource;
-    }
-
     public VatTreatmentResolver getResolver() {
         return resolver;
     }

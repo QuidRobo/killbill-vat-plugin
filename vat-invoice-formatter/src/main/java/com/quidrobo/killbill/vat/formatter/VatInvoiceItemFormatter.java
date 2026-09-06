@@ -89,10 +89,6 @@ public class VatInvoiceItemFormatter extends DefaultInvoiceItemFormatter {
     // VAT
     // ------------------------------------------------------------------
 
-    public BigDecimal getVatAmount() {
-        return vatAmount;
-    }
-
     public String getFormattedVatAmount() {
         return VatInvoiceFormatter.VatMoney.format(vatAmount, invoiceCurrency, locale);
     }
@@ -102,14 +98,15 @@ public class VatInvoiceItemFormatter extends DefaultInvoiceItemFormatter {
         return VatInvoiceFormatter.VatMoney.ratePercent(VatInvoiceFormatter.safe(item.getAmount()), vatAmount);
     }
 
-    /** The line amount excluding VAT. Catalogue prices are VAT exclusive, so this is the item amount. */
+    /**
+     * The line amount excluding VAT.
+     *
+     * This is simply the item amount. Under VAT-inclusive pricing the calculator has already
+     * rewritten the charge down to net before the invoice reaches a formatter, so there is no
+     * second place where the split has to be undone.
+     */
     public String getFormattedNetAmount() {
         return getFormattedAmount();
-    }
-
-    public String getFormattedGrossAmount() {
-        return VatInvoiceFormatter.VatMoney.format(
-                VatInvoiceFormatter.safe(item.getAmount()).add(vatAmount), invoiceCurrency, locale);
     }
 
     // ------------------------------------------------------------------

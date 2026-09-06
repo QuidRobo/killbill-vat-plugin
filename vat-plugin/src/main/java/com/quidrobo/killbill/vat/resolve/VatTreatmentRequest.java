@@ -24,7 +24,6 @@ public final class VatTreatmentRequest {
     private final String customerCountry;
     private final String customerVatNumber;
     private final boolean customerVatNumberValidated;
-    private final boolean business;
     private final String planName;
     private final String productName;
     private final LocalDate taxPoint;
@@ -34,7 +33,6 @@ public final class VatTreatmentRequest {
         this.customerVatNumber = builder.customerVatNumber == null
                                  ? null : builder.customerVatNumber.replaceAll("\\s", "").toUpperCase();
         this.customerVatNumberValidated = builder.customerVatNumberValidated;
-        this.business = builder.business;
         this.planName = builder.planName;
         this.productName = builder.productName;
         this.taxPoint = builder.taxPoint;
@@ -53,11 +51,6 @@ public final class VatTreatmentRequest {
     /** Whether that number has passed whatever validation the configuration demands. */
     public boolean isCustomerVatNumberValidated() {
         return customerVatNumberValidated;
-    }
-
-    /** A best-effort B2B signal. A validated VAT number is the strong one; this is the weak one. */
-    public boolean isBusiness() {
-        return business;
     }
 
     public String getPlanName() {
@@ -86,7 +79,6 @@ public final class VatTreatmentRequest {
         private String customerCountry;
         private String customerVatNumber;
         private boolean customerVatNumberValidated;
-        private boolean business;
         private String planName;
         private String productName;
         private LocalDate taxPoint;
@@ -103,11 +95,6 @@ public final class VatTreatmentRequest {
 
         public Builder customerVatNumberValidated(final boolean value) {
             this.customerVatNumberValidated = value;
-            return this;
-        }
-
-        public Builder business(final boolean value) {
-            this.business = value;
             return this;
         }
 

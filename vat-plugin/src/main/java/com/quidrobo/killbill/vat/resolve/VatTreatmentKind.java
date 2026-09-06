@@ -13,28 +13,20 @@ package com.quidrobo.killbill.vat.resolve;
 public enum VatTreatmentKind {
 
     /** VAT at the supplier's own rate. UK customer of a UK supplier. */
-    DOMESTIC(true),
+    DOMESTIC,
 
     /** VAT at the customer's country rate, under OSS or a local registration. */
-    DESTINATION(true),
+    DESTINATION,
 
     /** Zero rated, the recipient accounts for the VAT. Requires their VAT number on the invoice. */
-    REVERSE_CHARGE(false),
+    REVERSE_CHARGE,
 
     /** Place of supply is outside the taxing jurisdiction. No VAT, and not a VAT invoice. */
-    OUTSIDE_SCOPE(false),
+    OUTSIDE_SCOPE,
 
-    /** In scope but exempt. */
-    EXEMPT(false);
-
-    private final boolean charges;
-
-    VatTreatmentKind(final boolean charges) {
-        this.charges = charges;
-    }
-
-    /** True when this treatment actually puts VAT on the invoice. */
-    public boolean chargesVat() {
-        return charges;
-    }
+    /**
+     * In scope but exempt. Not produced by the default resolver; reachable by configuring it as a
+     * fallback treatment, or from a custom resolver.
+     */
+    EXEMPT
 }

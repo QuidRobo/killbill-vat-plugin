@@ -30,7 +30,8 @@ public class VatInvoiceFormatterActivator extends KillbillActivatorBase {
         // Populates the protected killbillAPI field this activator passes to the factory.
         super.start(context);
 
-        final InvoiceFormatterFactory factory = new VatInvoiceFormatterFactory(killbillAPI);
+        final InvoiceFormatterFactory factory =
+                new VatInvoiceFormatterFactory(killbillAPI, configProperties);
 
         final Hashtable<String, String> properties = new Hashtable<String, String>();
         properties.put(OSGIPluginProperties.PLUGIN_NAME_PROP, PLUGIN_NAME);

@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import com.quidrobo.killbill.vat.core.VatConfig;
 import com.quidrobo.killbill.vat.rates.VatRate;
 import com.quidrobo.killbill.vat.rates.VatRateSource;
+import com.quidrobo.killbill.vat.vies.VatNumberFormat;
 
 /**
  * The default resolver: UK and EU rules for electronically supplied services.
@@ -73,16 +74,22 @@ public class DigitalServicesVatResolver implements VatTreatmentResolver {
                                                   "validated VAT number " + request.getCustomerVatNumber()
                                                   + " in " + customerCountry);
             }
-            if (!config.isRegisteredIn(customerCountry)) {
-                // A business customer outside the reverse charge area. The place of supply of a
-                // B2B electronically supplied service is where the customer belongs, so this is
-                // outside scope rather than a reverse charge. Both are 0%, but a reverse charge
-                // legend on a non-EU invoice is simply wrong.
-                return VatTreatment.outsideScope(customerCountry, config.getOutsideScopeLegend(),
-                                                 "business customer in " + customerCountry
-                                                 + ", outside the reverse charge area and with no"
-                                                 + " registration there");
+            if (config.isRegisteredIn(customerCountry)) {
+                // A business customer somewhere the supplier is locally registered. Local VAT is
+                // charged, and the reason has to say why: falling through to the B2C branch used
+                // to record "VAT number is not validated" about a customer whose number was.
+                return charge(customerCountry, request,
+                              "business customer in " + customerCountry
+                              + " where the supplier holds a registration");
             }
+            // A business customer outside the reverse charge area. The place of supply of a B2B
+            // electronically supplied service is where the customer belongs, so this is outside
+            // scope rather than a reverse charge. Both are 0%, but a reverse charge legend on a
+            // non-EU invoice is simply wrong.
+            return VatTreatment.outsideScope(customerCountry, config.getOutsideScopeLegend(),
+                                             "business customer in " + customerCountry
+                                             + ", outside the reverse charge area and with no"
+                                             + " registration there");
         }
 
         if (config.isEuCountry(customerCountry)) {
@@ -124,6 +131,14 @@ public class DigitalServicesVatResolver implements VatTreatmentResolver {
         if (number == null || number.isEmpty()) {
             return false;
         }
+        if (!countryAgrees(number, request.getCustomerCountry())) {
+            // A GB number on a German account is not evidence that a German business is buying.
+            // Without this, any valid number from anywhere zero-rated a supply to any reverse
+            // charge country.
+            logger.warn("VAT number {} does not belong to the customer country {}; ignoring it",
+                        number, request.getCustomerCountry());
+            return false;
+        }
         switch (config.getVatNumberValidation()) {
             case NONE:
                 return true;
@@ -132,6 +147,33 @@ public class DigitalServicesVatResolver implements VatTreatmentResolver {
             default:
                 return request.isCustomerVatNumberValidated();
         }
+    }
+
+    /**
+     * Whether a VAT number's own country prefix matches where the customer says they are.
+     *
+     * Greece is EL in VAT numbers and GR in ISO country codes, and Northern Ireland numbers are
+     * XI but the account country is GB. Both pairings are accepted.
+     */
+    static boolean countryAgrees(final String vatNumber, final String customerCountry) {
+        final String numberCountry = VatNumberFormat.countryOf(vatNumber);
+        if (numberCountry == null || customerCountry == null) {
+            return true;
+        }
+        final String a = canonical(numberCountry);
+        final String b = canonical(customerCountry);
+        return a.equals(b);
+    }
+
+    private static String canonical(final String country) {
+        final String upper = country.trim().toUpperCase();
+        if ("EL".equals(upper)) {
+            return "GR";
+        }
+        if ("XI".equals(upper)) {
+            return "GB";
+        }
+        return upper;
     }
 
     private VatTreatment applyFallback(final VatTreatmentKind kind,

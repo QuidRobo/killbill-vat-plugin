@@ -74,29 +74,35 @@ public class VatServlet extends PluginServlet {
         final UUID tenantId = tenant == null ? null : tenant.getId();
 
         try {
-            if (path.startsWith("/config")) {
+            // Exact match, not a prefix: /configuration used to be served as /config.
+            final String route = path.endsWith("/") && path.length() > 1
+                                 ? path.substring(0, path.length() - 1) : path;
+            if ("/config".equals(route)) {
                 writeJson(resp, configReport(tenantId));
-            } else if (path.startsWith("/simulate")) {
+            } else if ("/simulate".equals(route)) {
                 writeJson(resp, simulate(req, tenantId));
-            } else if (path.startsWith("/healthcheck")) {
+            } else if ("/healthcheck".equals(route)) {
                 final Map<String, Object> body = healthReport(tenantId);
                 final boolean healthy = Boolean.TRUE.equals(body.get("healthy"));
+                // Content type first: buildResponse can commit the response, after which setting
+                // a header does nothing.
+                setJsonContentType(resp);
                 buildResponse(healthy ? HttpServletResponse.SC_OK
                                       : HttpServletResponse.SC_SERVICE_UNAVAILABLE,
                               mapper.writeValueAsBytes(body), resp);
-                setJsonContentType(resp);
             } else {
                 buildNotFoundResponse("Unknown path " + path
                                       + ". Try /config, /simulate or /healthcheck.", resp);
             }
         } catch (final RuntimeException e) {
             logger.warn("VAT plugin servlet failed for path {}", path, e);
+            // Deliberately does not echo the exception message: it can quote the caller's own
+            // input back, and the detail belongs in the log.
             final Map<String, Object> error = new LinkedHashMap<String, Object>();
-            error.put("error", e.getClass().getSimpleName());
-            error.put("message", String.valueOf(e.getMessage()));
+            error.put("error", "Request failed. See the plugin log for details.");
+            setJsonContentType(resp);
             buildResponse(HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
                           mapper.writeValueAsBytes(error), resp);
-            setJsonContentType(resp);
         }
     }
 
@@ -178,7 +184,6 @@ public class VatServlet extends PluginServlet {
                                                                .customerCountry(country)
                                                                .customerVatNumber(vatNumber)
                                                                .customerVatNumberValidated(validated)
-                                                               .business(vatNumber != null)
                                                                .planName(planName)
                                                                .productName(productName)
                                                                .taxPoint(taxPoint)
@@ -209,6 +214,7 @@ public class VatServlet extends PluginServlet {
         decision.put("rate", treatment.getRate());
         decision.put("taxItemDescription", treatment.getDescription());
         decision.put("invoiceLegend", treatment.getLegend());
+        decision.put("customerVatNumber", treatment.getCustomerVatNumber());
         decision.put("reason", treatment.getReason());
         out.put("decision", decision);
 

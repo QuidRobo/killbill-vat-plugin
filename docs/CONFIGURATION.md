@@ -71,6 +71,12 @@ VAT is computed as `gross - net` in inclusive mode, never as `gross * rate / (1 
 Rounding both halves independently lets them disagree: at 20% on 9.99 that produces
 8.33 + 1.67 = 10.00, one penny more than the advertised price.
 
+`rounding.mode` accepts only **`HALF_UP`, `HALF_DOWN` and `HALF_EVEN`**. Anything else is
+reported in `problems` and `HALF_UP` is used instead. The restriction is not fussiness: a mode
+that is not symmetric about zero rounds a credit differently from the sale it reverses, so the
+two never net to nothing and the difference accumulates on the VAT account forever. `FLOOR`,
+`CEILING`, `UP` and `DOWN` are all asymmetric in that sense.
+
 ## Rates
 
 Shorthand, always in force:
@@ -96,7 +102,30 @@ reverses VAT at the rate that applied then.
 A bare `20` is **rejected**. It is ambiguous between 20% and 2000%, and silently reading it
 either way is worse than refusing. Write `0.20` or `20%`.
 
+A rate must be a fraction in `[0, 1)`. `1.20` (somebody who meant 20% and wrote the multiplier),
+`100%` and a negative are all rejected and reported.
+
 A missing rate resolves to `OUTSIDE_SCOPE` with a reason naming the gap, never to 0%.
+
+### The `kind` dimension
+
+The segment between the country and the value is the rate **kind**:
+`rates.<CC>.<kind>` and `rates.<CC>.<kind>.<n>.rate|from|to`.
+
+`standard` is the only kind the built-in resolver ever looks up, and it is the one every
+diagnostic checks for. Other kinds (`reduced`, `zero`, `super-reduced`, whatever you name them)
+can be configured and are returned by `GET /config`, but nothing selects them until a custom
+`VatTreatmentResolver` asks `VatRateSource.findRate(country, kind, date)` for one. Kill Bill's
+catalogue carries no tax-category field, so there is no automatic way to know that one plan is
+reduced-rated and another is not; that mapping is exactly what a custom resolver is for.
+
+The practical consequence is that a **misspelt kind is silent by nature**: `rates.GB.standrd`
+registers a perfectly valid rate of a kind nobody asks for, and every domestic supply then
+resolves to `OUTSIDE_SCOPE` at 0%. That is why `problems` checks for a `standard` rate in force
+today rather than merely for the jurisdiction.
+
+Keys under `rates.` that match neither shape (a three-letter country code, `…0.form` for `from`)
+are reported rather than ignored.
 
 ## Treatment
 
@@ -109,6 +138,22 @@ A missing rate resolves to `OUTSIDE_SCOPE` with a reason naming the gap, never t
 | `euB2cUnregisteredTreatment` | `DOMESTIC` | What an EU consumer gets while `ossRegistered` is false. |
 | `unknownCountryTreatment` | `DOMESTIC` | What to do with no country on the account. |
 | `registeredCountries` | empty | Non-EU countries where the supplier holds a registration. Until a country is listed, supplies there are outside scope. |
+
+The three treatment properties (`euB2cTreatment`, `euB2cUnregisteredTreatment`,
+`unknownCountryTreatment`) accept any of:
+
+| Value | Effect |
+|---|---|
+| `DOMESTIC` | Charge the supplier country's standard rate. |
+| `DESTINATION` | Charge the customer country's standard rate. Falls to `OUTSIDE_SCOPE` if none is configured. |
+| `REVERSE_CHARGE` | 0%, with the reverse charge legend and the customer's VAT number. |
+| `OUTSIDE_SCOPE` | 0%, place of supply elsewhere. |
+| `EXEMPT` | 0%, but exempt rather than out of scope. |
+
+`EXEMPT` and `OUTSIDE_SCOPE` are both 0% and are deliberately distinct: an exempt supply is
+within the scope of VAT and is reported on a VAT return, an out-of-scope one is not, and the two
+have different consequences for input tax recovery. Nothing in the plugin resolves to `EXEMPT` on
+its own; it is there for a custom resolver, or as a deliberate fallback setting.
 
 ### The decision tree
 
@@ -154,6 +199,20 @@ Structural validation covers every EU country plus GB and XI. Check digits are i
 **GB, DE, IT, NL and FR**. Countries without an implemented checksum pass on structure alone
 rather than being rejected, since VIES is the authority either way.
 
+An all-zero body (`GB000000000`, `NL000000000B01`) is rejected outright, even though it satisfies
+the national check digits. It is what gets typed to get past a required field.
+
+**Where validation should live.** In `EXTERNAL` mode the plugin still applies the offline format
+check as a cheap gate, but the decision rests on `customerVatNumberValidatedAt`: without a
+recorded check inside `maxAgeDays`, VAT is charged rather than the reverse charge applied. That
+is the intended production shape, because the system that owns the customer record is the only
+layer that cannot be bypassed, and it is the one that can call VIES asynchronously rather than
+inside an invoice run.
+
+The plugin carries its own copy of the format and checksum rules for `CHECKSUM` mode, which exists
+for adopters who have no such system in front of Kill Bill. If you do have one, put the real
+validation there, set `EXTERNAL`, and treat the plugin's copy as unused.
+
 Until the VIES client ships (roadmap item 2), `customerVatNumberValidatedAt` is written by
 whatever external process you run. It accepts a bare date or a full ISO timestamp.
 
@@ -163,14 +222,21 @@ whatever external process you run. It accepts a bare date or a full ISO timestam
 |---|---|
 | `customerVatNumber` | The registration number, any format. Normalised before use. |
 | `customerVatNumberValidatedAt` | ISO date of the last successful external check. |
-| `customerIsBusiness` | `true`/`false`. For businesses that are not VAT registered. |
 | `customerTaxCountry` | Overrides the billing country for place of supply. |
 
 ```bash
 curl -X POST ... -H 'Content-Type: application/json' \
-  -d '[{"name":"customerVatNumber","value":"DE811234567"}]' \
+  -d '[{"name":"customerVatNumber","value":"DE136695976"}]' \
   'http://127.0.0.1:8080/1.0/kb/accounts/<accountId>/customFields'
 ```
+
+There is deliberately no `customerIsBusiness` field. Under both UK and EU rules what makes a
+supply B2B for VAT purposes is a valid VAT registration number, not a self-declared status, and a
+flag anyone can tick is not evidence a tax authority accepts. A customer with no number is
+charged VAT whatever they call themselves.
+
+Both fields are read by the tax plugin and by the invoice formatter, so the country the VAT was
+computed on and the country the invoice legend is written for are always the same one.
 
 ## Presentation
 
@@ -182,6 +248,47 @@ curl -X POST ... -H 'Content-Type: application/json' \
 
 `{rate}` and `{country}` are substituted. The description becomes the TAX item's description,
 which is what the invoice shows, and what the formatter groups the VAT summary by.
+
+The two `legend.*` properties are carried on the resolved `VatTreatment` and returned by
+`GET /simulate`, so a custom formatter or a downstream system can print them. The bundled
+`HtmlInvoiceTemplate.mustache` does **not** read them: Mustache cannot select between wordings,
+so the template holds the UK wording inline and branches on
+`invoice.reverseCharge` / `outsideScope` / `zeroRated` instead. If you change `legend.*`, change
+the template to match, or the invoice and the API will disagree.
+
+## Invoice formatter properties
+
+These are Kill Bill **system** properties (`killbill.properties` or `-D`), not tenant plugin
+configuration, because Kill Bill 0.24.x builds a formatter with no tenant context.
+
+| Property | Default | Meaning |
+|---|---|---|
+| `org.killbill.billing.plugin.vat.formatter.tenantId` | none | The tenant whose accounts the formatter may read. **Required.** |
+| `org.killbill.billing.plugin.vat.formatter.supplierCountry` | `GB` | Which country counts as domestic when choosing a legend. |
+
+Without a valid `tenantId` the formatter cannot read the account at all, so it knows neither the
+customer's country nor their VAT number. It does not guess: `invoice.vatTreatmentUnknown` becomes
+true, the specific legends are all suppressed, and the template prints a bare "no VAT charged"
+note. The alternative, guessing, prints a domestic zero-rating notice on what is really a
+reverse-charge invoice.
+
+`supplierCountry` should match the tax plugin's own `supplierCountry`. It only decides "is this
+customer overseas"; the notice wording in the bundled template is written for a UK supplier and
+needs rewording if yours is established elsewhere.
+
+### Template values the formatter adds
+
+| Key | Meaning |
+|---|---|
+| `invoice.formattedNetTotal` | Charges and charge adjustments, excluding VAT and credits. |
+| `invoice.formattedVatTotal` | Every TAX item. |
+| `invoice.formattedGrandTotal` | Net + VAT. **Use this as the invoice total**, not `formattedChargedAmount`, which answers a different question and will not add up on an invoice carrying a credit. |
+| `invoice.anyCredit`, `invoice.formattedCreditTotal` | `CBA_ADJ` and `CREDIT_ADJ`, shown on their own row. |
+| `invoice.vatBreakdown` | One row per tax description: `description`, `formattedRate`, `formattedNetAmount`, `formattedVatAmount`. |
+| `invoice.standardVat` / `reverseCharge` / `outsideScope` / `zeroRated` / `vatTreatmentUnknown` | At most one is true. |
+| `invoice.formattedTaxPointDate` | Earliest service period start, falling back to the invoice date. |
+| `invoice.customerVatNumber`, `invoice.customerCountry`, `invoice.supplierCountry` | |
+| per line: `lineDescription`, `formattedQuantity`, `formattedUnitPrice`, `vatRateLabel`, `formattedNetAmount`, `formattedVatAmount` | |
 
 This is one concrete advantage over AvaTax, which discards the rate percentage entirely: it
 writes only the tax amount and the tax name, and the `rate` field on the TAX item is the taxable
@@ -208,7 +315,10 @@ reconstructed by dividing. Here it is simply written.
 5. **Kill Bill 0.24.x only.** The 0.25 line changes `InvoicePluginApi` and moves to Jakarta.
 6. **The invoice formatter needs a tenant id property** on 0.24.x, because that version's
    `InvoiceFormatterFactory` signature carries no `TenantContext`. 0.25 adds an overload that
-   supplies one.
+   supplies one. Without it the formatter suppresses every treatment legend rather than guessing.
+7. **Only `standard` rates are selected automatically.** Reduced and zero-rated supplies need a
+   custom `VatTreatmentResolver`, because Kill Bill's catalogue has no tax-category field for one
+   to read.
 
 ## Endpoints
 
@@ -240,19 +350,26 @@ is the quickest way to confirm an inclusive-pricing override is actually taking 
 ### What `problems` reports
 
 - Unrecognised property keys, which are otherwise silently ignored.
-- Rates that could not be parsed, including the ambiguous bare-number case.
+- Keys under `rates.` that match neither accepted shape, so the parser drops them.
+- Rates that could not be parsed: the ambiguous bare number, a negative, `100%` or more.
+- Two rate entries for the same country and kind whose validity windows overlap, so which one
+  applies depends on configuration nobody meant to be significant.
 - No rates at all, or no **standard** rate in force today for the supplier country. That second
   check is deliberately about the standard rate rather than the jurisdiction: a misspelt rate kind
   (`rates.GB.standrd`) registers the jurisdiction while leaving domestic supplies untaxed.
+- A `priceMode.plans.*` or `priceMode.products.*` value that is neither `INCLUSIVE` nor
+  `EXCLUSIVE`. `INCLUSIV` used to revert a plan to `EXCLUSIVE` in silence, which charges 20% on
+  top of a price that already contains it.
 - EU rates configured with `ossRegistered` false, so they are inert.
 - `vatNumberValidation` set to `NONE` or `CHECKSUM`, neither of which proves a registration exists.
+- A `rounding.mode` that is not symmetric about zero, or is not a rounding mode at all.
 - An implausible `rounding.scale`.
 
 ## Offline check
 
 Some environments cannot reach Maven Central, which makes `mvn` unusable. `dev/offline-check/`
-compiles the entire plugin against hand-written API stubs and runs the logic assertions with
-nothing but a JDK:
+compiles the entire plugin against hand-written API stubs and runs **the same test classes under
+`src/test/java` that `mvn test` runs**, with nothing but a JDK:
 
 ```bash
 dev/offline-check/run.sh

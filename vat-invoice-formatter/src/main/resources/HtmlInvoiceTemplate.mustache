@@ -12,6 +12,12 @@
   Before use:
     1. Replace the supplier name, address, VAT number and company number below.
     2. Either set the LOGO_INFO tenant key, or replace {{logo.logo}} with a data: URI.
+    3. Set org.killbill.billing.plugin.vat.formatter.tenantId in killbill.properties. Without
+       it the formatter cannot read the account, so no treatment legend and no customer VAT
+       number can be printed, and invoice.vatTreatmentUnknown renders instead.
+    4. If the supplier is not established in the UK, set
+       org.killbill.billing.plugin.vat.formatter.supplierCountry and reword the notices below,
+       which are written for a UK supplier.
 
   Upload with:
     POST /1.0/kb/invoices/template   (Content-Type: text/html)
@@ -197,6 +203,11 @@
     <b>No VAT charged:</b> no VAT has been applied to the charges on this invoice.
   </div>
   {{/invoice.zeroRated}}
+  {{#invoice.vatTreatmentUnknown}}
+  <div class="notice">
+    <b>No VAT charged</b> on this invoice.
+  </div>
+  {{/invoice.vatTreatmentUnknown}}
 
   <!-- ================= LINE ITEMS ================= -->
   <table class="items">
@@ -246,8 +257,14 @@
           <tr class="rule"><td colspan="2"></td></tr>
           <tr class="grand">
             <td>Total including VAT</td>
-            <td class="v">{{invoice.formattedChargedAmount}}</td>
+            <td class="v">{{invoice.formattedGrandTotal}}</td>
           </tr>
+          {{#invoice.anyCredit}}
+          <tr>
+            <td class="k">Credit applied</td>
+            <td class="v">{{invoice.formattedCreditTotal}}</td>
+          </tr>
+          {{/invoice.anyCredit}}
           {{#invoice.anyPayment}}
           <tr>
             <td class="k">Paid</td>

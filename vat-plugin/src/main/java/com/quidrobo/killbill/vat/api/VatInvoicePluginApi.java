@@ -7,7 +7,6 @@
  */
 package com.quidrobo.killbill.vat.api;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -147,8 +146,4 @@ public class VatInvoicePluginApi extends PluginInvoicePluginApi {
         }
     }
 
-    /** Exposed for tests. */
-    static Map<UUID, Set<UUID>> emptyTaxed() {
-        return Collections.emptyMap();
-    }
 }

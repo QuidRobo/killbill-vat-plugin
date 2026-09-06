@@ -121,26 +121,77 @@ public final class VatRateTable implements VatRateSource {
         }
         final String wantedKind = (kind == null ? "standard" : kind).trim().toLowerCase();
 
-        VatRate openEndedFallback = null;
+        VatRate best = null;
         for (final VatRate candidate : candidates) {
-            if (!candidate.getKind().equals(wantedKind)) {
+            if (!candidate.getKind().equals(wantedKind) || !candidate.appliesOn(on)) {
                 continue;
             }
-            if (candidate.appliesOn(on)) {
-                // A dated match beats an undated one, so keep looking only if this was the
-                // shorthand form with no range at all.
-                if (candidate.getValidFrom() != null || candidate.getValidTo() != null) {
-                    return candidate;
-                }
-                openEndedFallback = candidate;
-            }
+            best = moreSpecific(best, candidate);
         }
-        return openEndedFallback;
+        return best;
+    }
+
+    /**
+     * Picks between two rates that both apply on the same date.
+     *
+     * Selection must not depend on iteration order. Properties are a Hashtable, so the candidate
+     * list arrives in string-hash order, and an earlier version of this method returned whichever
+     * overlapping rate happened to come first. Renumbering two identical entries from 0/1 to 2/3
+     * changed the tax charged. Now: a dated rate always beats an undated one, and between two
+     * dated rates the later start wins, which is what "I added a new rate" means.
+     */
+    private static VatRate moreSpecific(final VatRate current, final VatRate candidate) {
+        if (current == null) {
+            return candidate;
+        }
+        final boolean currentDated = current.getValidFrom() != null || current.getValidTo() != null;
+        final boolean candidateDated = candidate.getValidFrom() != null || candidate.getValidTo() != null;
+        if (currentDated != candidateDated) {
+            return candidateDated ? candidate : current;
+        }
+        if (current.getValidFrom() == null) {
+            return candidate.getValidFrom() == null ? current : candidate;
+        }
+        if (candidate.getValidFrom() == null) {
+            return current;
+        }
+        return candidate.getValidFrom().isAfter(current.getValidFrom()) ? candidate : current;
     }
 
     @Override
     public boolean hasJurisdiction(final String jurisdiction) {
         return jurisdiction != null && byJurisdiction.containsKey(jurisdiction.trim().toUpperCase());
+    }
+
+    /**
+     * Descriptions of rates that collide: two entries for the same jurisdiction and kind whose
+     * validity windows overlap, so which one applies depends on configuration the author probably
+     * did not intend to be significant.
+     */
+    public List<String> findOverlaps() {
+        final List<String> overlaps = new ArrayList<String>();
+        for (final Map.Entry<String, List<VatRate>> entry : byJurisdiction.entrySet()) {
+            final List<VatRate> rates = entry.getValue();
+            for (int i = 0; i < rates.size(); i++) {
+                for (int j = i + 1; j < rates.size(); j++) {
+                    final VatRate a = rates.get(i);
+                    final VatRate b = rates.get(j);
+                    if (a.getKind().equals(b.getKind()) && windowsOverlap(a, b)) {
+                        overlaps.add("Rates " + a + " and " + b + " overlap. Close the earlier one"
+                                     + " with a 'to' date, or delete one of them.");
+                    }
+                }
+            }
+        }
+        return overlaps;
+    }
+
+    private static boolean windowsOverlap(final VatRate a, final VatRate b) {
+        final LocalDate aFrom = a.getValidFrom() == null ? LocalDate.MIN : a.getValidFrom();
+        final LocalDate bFrom = b.getValidFrom() == null ? LocalDate.MIN : b.getValidFrom();
+        final LocalDate aTo = a.getValidTo() == null ? LocalDate.MAX : a.getValidTo();
+        final LocalDate bTo = b.getValidTo() == null ? LocalDate.MAX : b.getValidTo();
+        return aFrom.isBefore(bTo) && bFrom.isBefore(aTo);
     }
 
     /** Every configured rate, for logging at startup so misconfiguration is visible. */
@@ -161,6 +212,11 @@ public final class VatRateTable implements VatRateSource {
         rates.add(rate);
     }
 
+    /** True when a key under the rates prefix is one the parser actually understands. */
+    public static boolean isRecognisedRateKey(final String key) {
+        return key != null && (SHORTHAND.matcher(key).matches() || DATED.matcher(key).matches());
+    }
+
     /**
      * Accepts a fraction ({@code 0.20}) or a percentage ({@code 20%}). Anything greater than 1
      * without a percent sign is rejected rather than guessed at: silently reading {@code 20} as
@@ -172,12 +228,17 @@ public final class VatRateTable implements VatRateSource {
         }
         final String trimmed = value.trim();
         try {
+            final BigDecimal rate;
             if (trimmed.endsWith("%")) {
-                return new BigDecimal(trimmed.substring(0, trimmed.length() - 1).trim())
+                rate = new BigDecimal(trimmed.substring(0, trimmed.length() - 1).trim())
                         .movePointLeft(2);
+            } else {
+                rate = new BigDecimal(trimmed);
             }
-            final BigDecimal rate = new BigDecimal(trimmed);
-            if (rate.compareTo(BigDecimal.ONE) > 0) {
+            // Bounded on both branches. An earlier version guarded only the fraction form, so
+            // "2000%" parsed happily as a 2000% rate and "-0.20" as a negative one, which then
+            // divides by zero in inclusive mode. A VAT rate is a fraction of one.
+            if (rate.signum() < 0 || rate.compareTo(BigDecimal.ONE) >= 0) {
                 return null;
             }
             return rate;

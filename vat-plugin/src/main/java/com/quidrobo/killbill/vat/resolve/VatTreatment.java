@@ -101,10 +101,6 @@ public final class VatTreatment {
         return reason;
     }
 
-    public boolean chargesVat() {
-        return kind.chargesVat() && rate.compareTo(BigDecimal.ZERO) != 0;
-    }
-
     @Override
     public String toString() {
         return kind + " " + jurisdiction + " rate=" + rate + " (" + reason + ")";

@@ -1,0 +1,50 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  maven:
+    name: mvn verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          # killbill-oss-parent 0.146.63 targets JDK 11. Building on a newer JDK is not the
+          # same thing as targeting one, and the OSGi bundle has to run on the server's JVM.
+          java-version: '11'
+          distribution: temurin
+          cache: maven
+
+      - run: mvn -B -ntp clean verify
+
+      - name: Upload bundles
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundles
+          path: |
+            vat-plugin/target/*.jar
+            vat-invoice-formatter/target/*.jar
+          if-no-files-found: error
+
+  offline:
+    # Proves the offline harness still works, so a contributor behind a proxy that cannot reach
+    # Maven Central has a route that is known good rather than one nobody has run in months.
+    name: offline check (no Maven)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '11'
+          distribution: temurin
+
+      - run: ./dev/offline-check/run.sh
