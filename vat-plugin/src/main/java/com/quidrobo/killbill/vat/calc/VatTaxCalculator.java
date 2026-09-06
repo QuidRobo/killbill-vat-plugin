@@ -86,7 +86,7 @@ public class VatTaxCalculator extends PluginTaxCalculator {
             final boolean adjusted = adjustments != null && !adjustments.isEmpty();
             final PriceMode configuredMode =
                     config.getPriceMode(taxable.getPlanName(), taxable.getProductName());
-            final PriceMode priceMode = effectivePriceMode(configuredMode, adjusted);
+            final PriceMode priceMode = VatComputation.effectivePriceMode(configuredMode, adjusted);
             if (priceMode != configuredMode) {
                 logger.warn("Item {} is priced VAT-inclusive but already carries adjustments;"
                             + " leaving its amount at {} and charging VAT on top instead",
@@ -121,19 +121,6 @@ public class VatTaxCalculator extends PluginTaxCalculator {
         }
 
         return additionalItems;
-    }
-
-    /**
-     * The price mode actually used, which is not always the configured one.
-     *
-     * Rewriting an item that already carries adjustments would silently change what those
-     * adjustments were computed against, so the rewrite is off for an adjusted item. The split has
-     * to switch with it: extracting VAT out of the gross while leaving the charge line gross
-     * produced a tax amount matching no rate and a total matching nothing at all. Charging on top
-     * is the behaviour the warning had always claimed, and now the behaviour it describes.
-     */
-    static PriceMode effectivePriceMode(final PriceMode configured, final boolean itemIsAdjusted) {
-        return configured == PriceMode.INCLUSIVE && itemIsAdjusted ? PriceMode.EXCLUSIVE : configured;
     }
 
     private VatTreatmentRequest request(final CustomerProfile customer,

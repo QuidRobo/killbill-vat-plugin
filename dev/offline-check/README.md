@@ -23,6 +23,12 @@ killbill-platform 0.41.18, but method bodies return null and nothing is behaviou
 `TinyTestRunner` supports no groups, no ordering, no data providers and no expected exceptions.
 None are used here. If a test ever needs one, delete this runner rather than grow it.
 
+A concrete example of what this cannot catch, so nobody trusts it further than it deserves: a
+test that touched a class extending `PluginTaxCalculator` passed here and failed under Maven with
+`NoClassDefFoundError: org/killbill/commons/utils/collect/MultiValueMap`. The stub superclass has
+no such reference, and the real one arrives only as a transitive of a `provided` dependency.
+Green here means the code compiles and the logic holds. It does not mean the classpath is sound.
+
 Always run `mvn clean install` before releasing.
 
 If a stub disagrees with the real API, the real API is right: fix the stub.

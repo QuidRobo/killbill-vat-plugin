@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
@@ -25,24 +23,77 @@
 
     <dependencies>
         <dependency>
-            <groupId>org.kill-bill.billing</groupId>
-            <artifactId>killbill-api</artifactId>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
             <scope>provided</scope>
         </dependency>
         <dependency>
-            <groupId>org.kill-bill.billing.plugin</groupId>
-            <artifactId>killbill-plugin-api-invoice</artifactId>
+            <groupId>org.apache.felix</groupId>
+            <artifactId>org.apache.felix.framework</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.kill-bill.billing</groupId>
+            <artifactId>killbill-api</artifactId>
             <scope>provided</scope>
         </dependency>
         <!--
           Non-standard for a plugin, but DefaultInvoiceFormatter and DefaultInvoiceItemFormatter
           live in the core invoice module. This is the compile-time counterpart of the runtime
           setting org.killbill.osgi.system.bundle.export.packages.extra.
+
+          The version is a literal, and has to be. killbill-oss-parent manages every core
+          artifact at ${killbill.version}, a property it never defines: it comes from the core
+          build itself, where it is ${project.version}. Core builds; anything else that inherits
+          one of those managed versions dies at model-building time with
+
+            'dependencies.dependency.version' for org.kill-bill.billing:killbill-invoice:jar
+            must be a valid version but is '${killbill.version}'
+
+          Defining killbill.version in our own parent pom does NOT fix it. That was tried and
+          failed the same way: the placeholder in the parent's dependencyManagement is not
+          interpolated against a property declared further down the chain. Writing the version
+          here means dependencyManagement is never consulted for this artifact at all, which is
+          the only form that works. Do not "tidy" it into a property.
+
+          0.24.15 is the core release built on oss-parent 0.146.63. Bump BOTH together, or the
+          API compiled against and the API on the server drift apart:
+            0.24.11 -> 0.146.39, 0.24.15 -> 0.146.63, 0.24.18 -> 0.146.77, 0.24.21 -> 0.146.87
         -->
         <dependency>
             <groupId>org.kill-bill.billing</groupId>
             <artifactId>killbill-invoice</artifactId>
+            <version>0.24.15</version>
             <scope>provided</scope>
+            <!--
+              Every transitive is excluded, deliberately and by wildcard.
+
+              killbill-invoice's own published pom declares killbill-internal-api and
+              killbill-util with no version, inheriting ${killbill.version} from the killbill
+              aggregator, where it is ${project.version}. That resolves inside the Kill Bill
+              reactor and nowhere else, so a downstream build asks Central for a file literally
+              named killbill-util-${killbill.version}.jar and fails. Core artifacts are not
+              meant to be consumed from outside their own build.
+
+              Nothing here is lost. All we need is to compile against DefaultInvoiceFormatter
+              and DefaultInvoiceItemFormatter, whose constructor and method signatures reference
+              only killbill-api, joda-time and java.* types, all declared above. The classes
+              they touch internally (org.killbill.commons.utils.Strings, invoice.model.*) appear
+              in method bodies, which javac never reads. At runtime the server supplies the whole
+              of core anyway, which is what
+              org.killbill.osgi.system.bundle.export.packages.extra is for.
+
+              If a future Kill Bill version puts a core-internal type into one of those
+              signatures, this stops compiling. The honest fix then is to implement
+              InvoiceFormatter from killbill-api directly instead of extending core, which would
+              also retire the export.packages.extra requirement.
+            -->
+            <exclusions>
+                <exclusion>
+                    <groupId>*</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>org.kill-bill.billing</groupId>
@@ -54,6 +105,11 @@
             <artifactId>killbill-platform-osgi-bundles-lib-killbill</artifactId>
             <scope>provided</scope>
         </dependency>
+        <dependency>
+            <groupId>org.kill-bill.billing.plugin</groupId>
+            <artifactId>killbill-plugin-api-invoice</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <!-- PluginInvoicePluginApi, PluginTaxCalculator, PluginInvoiceItem, the config handlers. -->
         <dependency>
             <groupId>org.kill-bill.billing.plugin.java</groupId>
@@ -62,16 +118,6 @@
         <dependency>
             <groupId>org.kill-bill.commons</groupId>
             <artifactId>killbill-clock</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>joda-time</groupId>
-            <artifactId>joda-time</artifactId>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.felix</groupId>
-            <artifactId>org.apache.felix.framework</artifactId>
-            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>

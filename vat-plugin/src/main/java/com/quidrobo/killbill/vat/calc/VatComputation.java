@@ -35,6 +35,23 @@ public final class VatComputation {
     }
 
     /**
+     * The price mode actually used for an item, which is not always the configured one.
+     *
+     * Rewriting an item that already carries adjustments would silently change what those
+     * adjustments were computed against, so the rewrite is off for an adjusted item. The split
+     * has to switch with it: extracting VAT out of the gross while leaving the charge line gross
+     * produced a tax amount matching no rate and a total matching nothing at all.
+     *
+     * This lives here, beside the arithmetic, rather than on the calculator. It is a decision
+     * about how to read a price, it needs no Kill Bill types, and putting it on a subclass of
+     * {@code PluginTaxCalculator} meant a test could not call it without loading that whole
+     * hierarchy and everything it drags in.
+     */
+    public static PriceMode effectivePriceMode(final PriceMode configured, final boolean itemIsAdjusted) {
+        return configured == PriceMode.INCLUSIVE && itemIsAdjusted ? PriceMode.EXCLUSIVE : configured;
+    }
+
+    /**
      * Splits a catalogue amount into its net and VAT parts.
      *
      * @param itemAmount   the amount as the catalogue produced it: net when EXCLUSIVE, gross when INCLUSIVE

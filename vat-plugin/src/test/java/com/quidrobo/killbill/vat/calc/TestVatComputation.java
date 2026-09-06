@@ -129,6 +129,50 @@ public class TestVatComputation {
         assertEquals(PriceMode.parse(null, PriceMode.INCLUSIVE), PriceMode.INCLUSIVE);
     }
 
+    // ------------------------------------------------------------------
+    // Which price mode actually applies
+    // ------------------------------------------------------------------
+
+    @Test(groups = "fast")
+    public void testUnadjustedItemsKeepTheirConfiguredPriceMode() {
+        assertEquals(VatComputation.effectivePriceMode(PriceMode.INCLUSIVE, false), PriceMode.INCLUSIVE);
+        assertEquals(VatComputation.effectivePriceMode(PriceMode.EXCLUSIVE, false), PriceMode.EXCLUSIVE);
+    }
+
+    /**
+     * An adjusted item cannot be rewritten: the adjustment was computed against the gross amount,
+     * so reducing the charge under it changes what the customer was credited.
+     */
+    @Test(groups = "fast")
+    public void testAnAdjustedInclusiveItemFallsBackToChargingOnTop() {
+        assertEquals(VatComputation.effectivePriceMode(PriceMode.INCLUSIVE, true), PriceMode.EXCLUSIVE);
+    }
+
+    @Test(groups = "fast")
+    public void testAdjustmentsDoNotDisturbExclusivePricing() {
+        assertEquals(VatComputation.effectivePriceMode(PriceMode.EXCLUSIVE, true), PriceMode.EXCLUSIVE);
+    }
+
+    /**
+     * The bug that fallback fixes, in figures.
+     *
+     * Under the old behaviour an adjusted inclusive item kept its gross amount on the invoice
+     * while the TAX item carried the VAT extracted from that gross: 100.00 gross at 20% produced
+     * a 16.67 tax item sitting beside a 100.00 charge. That is 16.67% of the line, a rate that
+     * exists nowhere, on a total nobody quoted.
+     */
+    @Test(groups = "fast")
+    public void testTheAdjustedItemFallbackProducesACoherentLine() {
+        final PriceMode mode = VatComputation.effectivePriceMode(PriceMode.INCLUSIVE, true);
+        final VatComputation.VatSplit split = VatComputation.split(new BigDecimal("100.00"),
+                                                                   new BigDecimal("0.20"), mode,
+                                                                   2, RoundingMode.HALF_UP);
+
+        assertAmount(split.getNet(), "100.00");
+        assertAmount(split.getVat(), "20.00");
+        assertFalse(split.requiresRewrite(new BigDecimal("100.00")), "so nothing is rewritten");
+    }
+
     private static VatComputation.VatSplit split(final String amount,
                                                  final String rate,
                                                  final PriceMode mode) {
