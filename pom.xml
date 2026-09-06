@@ -65,6 +65,22 @@
     </modules>
 
     <properties>
+        <!--
+          killbill-oss-parent manages every core Kill Bill artifact at ${killbill.version} but
+          never defines it: the property comes from the killbill core build itself, where it is
+          ${project.version}. Core builds fine; anything else referencing a core artifact fails
+          at model-building time with "must be a valid version but is '${killbill.version}'".
+
+          Almost no plugin hits this, because almost no plugin depends on core. The invoice
+          formatter does: DefaultInvoiceFormatter lives in killbill-invoice. So the version has
+          to be supplied here.
+
+          0.24.15 is the core release built on oss-parent 0.146.63, so the two stay coherent.
+          Bump BOTH together or the compile-time and runtime APIs drift apart:
+            0.24.11 -> 0.146.39, 0.24.15 -> 0.146.63, 0.24.18 -> 0.146.77, 0.24.21 -> 0.146.87
+        -->
+        <killbill.version>0.24.15</killbill.version>
+
         <check.skip-dependency>true</check.skip-dependency>
         <check.skip-dependency-scope>true</check.skip-dependency-scope>
         <check.skip-dependency-versions>true</check.skip-dependency-versions>
