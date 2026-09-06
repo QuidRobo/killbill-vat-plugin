@@ -1,0 +1,264 @@
+# Configuration reference
+
+All properties live under `org.killbill.billing.plugin.vat.` and are uploaded per tenant:
+
+```
+POST /1.0/kb/tenants/uploadPluginConfig/killbill-vat
+Content-Type: text/plain
+```
+
+Kill Bill fires `TENANT_CONFIG_CHANGE` on upload, which rebuilds the tenant's runtime, so rates
+and price modes change without a restart. Properties set as Kill Bill system properties act as
+the default for tenants that have uploaded nothing.
+
+---
+
+## Core
+
+| Property | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | Master switch. When false the plugin adds no items at all. |
+| `supplierCountry` | `GB` | Where the supplier is established. Defines a domestic supply. |
+| `treatmentResolver` | built-in | FQCN of a `VatTreatmentResolver`. Needs a public no-arg constructor. A class that fails to load falls back to the default rather than leaving VAT uncharged. |
+
+## VAT-inclusive pricing
+
+| Property | Default | Meaning |
+|---|---|---|
+| `priceMode` | `EXCLUSIVE` | `EXCLUSIVE` or `INCLUSIVE`. Also accepts `NET`/`GROSS`. |
+| `priceMode.plans.<planName>` | | Per-plan override. |
+| `priceMode.products.<productName>` | | Per-product override. |
+
+Resolution order is **plan, then product, then tenant default**, so a catalogue can price
+consumer plans inclusively and business plans exclusively.
+
+### How inclusive mode works
+
+Kill Bill treats catalogue amounts as net everywhere, so inclusive pricing is implemented by
+returning the charge item **with the same id** and a rewritten amount. `InvoicePluginDispatcher`
+classifies `amount` as a mutable field and treats a returned item whose id already exists as an
+update rather than an addition.
+
+```
+catalogue 120.00, INCLUSIVE, 20%
+  -> RECURRING item rewritten to 100.00   (same id, same type, same dates)
+  -> TAX item        20.00                (linked to it)
+  -> invoice total  120.00                (unchanged)
+```
+
+Two things to know before relying on it:
+
+1. **The rewrite is first-generation only.** On a re-run against an already persisted invoice,
+   `DefaultInvoiceDao` only applies amount changes for types in `ALLOWED_INVOICE_ITEM_TYPES`, and
+   `RECURRING` is not in that list. An amount rewrite of an already-persisted recurring item is
+   silently dropped.
+2. **Items that already carry adjustments are not rewritten.** Changing the amount would silently
+   change what those adjustments were computed against. The plugin logs a warning and charges VAT
+   on top instead, which is visible rather than wrong.
+
+No core Kill Bill test exercises the in-place amount rewrite. It follows from the field
+classification and the `DefaultInvoiceDao` comment that explicitly anticipates plugins modifying
+amounts, but verify it against your own server before production.
+
+## Rounding
+
+| Property | Default |
+|---|---|
+| `rounding.scale` | `2` |
+| `rounding.mode` | `HALF_UP` |
+
+VAT is computed as `gross - net` in inclusive mode, never as `gross * rate / (1 + rate)`.
+Rounding both halves independently lets them disagree: at 20% on 9.99 that produces
+8.33 + 1.67 = 10.00, one penny more than the advertised price.
+
+## Rates
+
+Shorthand, always in force:
+
+```properties
+org.killbill.billing.plugin.vat.rates.GB.standard = 0.20
+org.killbill.billing.plugin.vat.rates.DE.standard = 19%
+```
+
+Dated, for rate history. Half-open ranges: `from` is included, `to` is not.
+
+```properties
+org.killbill.billing.plugin.vat.rates.GB.standard.0.rate = 0.175
+org.killbill.billing.plugin.vat.rates.GB.standard.0.from = 2008-12-01
+org.killbill.billing.plugin.vat.rates.GB.standard.0.to   = 2010-01-01
+org.killbill.billing.plugin.vat.rates.GB.standard.1.rate = 0.20
+org.killbill.billing.plugin.vat.rates.GB.standard.1.from = 2011-01-04
+```
+
+Rates are looked up **as at the tax point**, not as at today, so a credit against an old supply
+reverses VAT at the rate that applied then.
+
+A bare `20` is **rejected**. It is ambiguous between 20% and 2000%, and silently reading it
+either way is worse than refusing. Write `0.20` or `20%`.
+
+A missing rate resolves to `OUTSIDE_SCOPE` with a reason naming the gap, never to 0%.
+
+## Treatment
+
+| Property | Default | Meaning |
+|---|---|---|
+| `euCountries` | the 27 member states | Which countries count as EU. |
+| `reverseChargeCountries` | same as `euCountries` | Where a B2B supply is a reverse charge rather than outside scope. An EU-established supplier should add `GB`. |
+| `euB2cTreatment` | `DESTINATION` | What an EU consumer gets. `DESTINATION` charges their own country rate under OSS. |
+| `ossRegistered` | `false` | Whether the supplier holds an EU One Stop Shop registration. Required before `DESTINATION` will actually charge an EU consumer. |
+| `euB2cUnregisteredTreatment` | `DOMESTIC` | What an EU consumer gets while `ossRegistered` is false. |
+| `unknownCountryTreatment` | `DOMESTIC` | What to do with no country on the account. |
+| `registeredCountries` | empty | Non-EU countries where the supplier holds a registration. Until a country is listed, supplies there are outside scope. |
+
+### The decision tree
+
+```
+no customer country          -> unknownCountryTreatment (default DOMESTIC)
+customer in supplierCountry  -> DOMESTIC at the supplier standard rate
+validated VAT number
+    in reverseChargeCountries -> REVERSE_CHARGE at 0%, legend required
+    elsewhere, no registration -> OUTSIDE_SCOPE
+customer in the EU, no valid number -> euB2cTreatment (default DESTINATION),
+                                        but only if ossRegistered; otherwise
+                                        euB2cUnregisteredTreatment + a warning
+registeredCountries contains it     -> DESTINATION at that country's rate
+otherwise                            -> OUTSIDE_SCOPE
+```
+
+Three defaults are chosen deliberately and are worth understanding before you change them:
+
+- **An unvalidated VAT number is not a reverse charge.** It falls through to the B2C branch and
+  VAT is charged. The supplier carries the liability for getting this wrong.
+- **An unknown country charges domestic VAT.** Over-collecting is a refund; under-collecting is a
+  debt. Set `unknownCountryTreatment = OUTSIDE_SCOPE` only if you have a reason.
+- **Reverse charge and outside scope are both 0% but are not the same.** A reverse charge legend
+  on a non-EU invoice is simply wrong, so they are separate treatments with separate wording.
+- **A configured rate is not authority to charge it.** Charging German VAT without an OSS
+  registration means collecting tax with no mechanism to remit it, which is worse than not
+  charging it. `ossRegistered` has to be turned on deliberately, and the fallback is logged.
+
+## VAT number validation
+
+| Property | Default |
+|---|---|
+| `vatNumberValidation` | `CHECKSUM` |
+| `vatNumberValidation.maxAgeDays` | `90` |
+
+| Mode | Behaviour |
+|---|---|
+| `NONE` | Trust whatever is on file. Development only. |
+| `CHECKSUM` | Structure plus check digits, offline. Not proof of registration. |
+| `EXTERNAL` | Requires `customerVatNumberValidatedAt` on the account, within `maxAgeDays`. **Use this in production.** |
+
+Structural validation covers every EU country plus GB and XI. Check digits are implemented for
+**GB, DE, IT, NL and FR**. Countries without an implemented checksum pass on structure alone
+rather than being rejected, since VIES is the authority either way.
+
+Until the VIES client ships (roadmap item 2), `customerVatNumberValidatedAt` is written by
+whatever external process you run. It accepts a bare date or a full ISO timestamp.
+
+## Account custom fields
+
+| Field | Purpose |
+|---|---|
+| `customerVatNumber` | The registration number, any format. Normalised before use. |
+| `customerVatNumberValidatedAt` | ISO date of the last successful external check. |
+| `customerIsBusiness` | `true`/`false`. For businesses that are not VAT registered. |
+| `customerTaxCountry` | Overrides the billing country for place of supply. |
+
+```bash
+curl -X POST ... -H 'Content-Type: application/json' \
+  -d '[{"name":"customerVatNumber","value":"DE811234567"}]' \
+  'http://127.0.0.1:8080/1.0/kb/accounts/<accountId>/customFields'
+```
+
+## Presentation
+
+| Property | Default |
+|---|---|
+| `taxItemDescription` | `VAT {rate}` |
+| `legend.reverseCharge` | see example properties |
+| `legend.outsideScope` | see example properties |
+
+`{rate}` and `{country}` are substituted. The description becomes the TAX item's description,
+which is what the invoice shows, and what the formatter groups the VAT summary by.
+
+This is one concrete advantage over AvaTax, which discards the rate percentage entirely: it
+writes only the tax amount and the tax name, and the `rate` field on the TAX item is the taxable
+item's unit price. A UK VAT invoice must show the rate per line, so with AvaTax it has to be
+reconstructed by dividing. Here it is simply written.
+
+## Per-call properties
+
+| Plugin property | Effect |
+|---|---|
+| `KILLBILL_VAT_SKIP` | Any non-null value bypasses the plugin for that call. |
+
+## Known limitations
+
+1. **Adjustment and credit refunds are skipped.** Refunding VAT on an adjustment requires knowing
+   which adjustments were already accounted for, which needs persisted plugin state. Until that
+   exists the plugin never double-taxes and never auto-refunds. This is deliberate: the failure
+   mode is a missing refund you can spot, not a repeated one you cannot.
+2. **Rates live in config, not a database.** Fine while rates are maintained by engineers; the
+   `VatRateSource` interface is the seam for moving them.
+3. **No VIES client yet.** `EXTERNAL` mode reads a verdict someone else wrote.
+4. **No location evidence reconciliation.** EU B2C formally requires two non-contradictory pieces
+   of evidence. The plugin currently trusts the account country.
+5. **Kill Bill 0.24.x only.** The 0.25 line changes `InvoicePluginApi` and moves to Jakarta.
+6. **The invoice formatter needs a tenant id property** on 0.24.x, because that version's
+   `InvoiceFormatterFactory` signature carries no `TenantContext`. 0.25 adds an overload that
+   supplies one.
+
+## Endpoints
+
+All read-only, mounted under `/plugins/killbill-vat/`, authenticated the same way as any Kill Bill
+request (the tenant is resolved from the API key and secret).
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /config` | The effective parsed configuration for the tenant, plus a `problems` array. |
+| `GET /simulate` | The treatment, rate, reason and net/VAT/gross split for a hypothetical supply. |
+| `GET /healthcheck` | 200 when the configuration is sound, 503 when `problems` is non-empty. |
+
+### `GET /simulate` parameters
+
+All optional, so it is usable by hand from a browser.
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `country` | none | Customer country, ISO 3166-1 alpha-2. Omitting it exercises `unknownCountryTreatment`. |
+| `vatNumber` | none | Customer VAT number, any format. |
+| `validated` | `false` | Whether to treat that number as externally verified. |
+| `amount` | `100.00` | Catalogue amount, read according to the resolved price mode. |
+| `date` | today | Tax point, so historical rates can be checked. |
+| `plan`, `product` | none | Used to resolve per-plan and per-product price mode overrides. |
+
+The response echoes the resolved `priceMode` and whether the charge line would be rewritten, which
+is the quickest way to confirm an inclusive-pricing override is actually taking effect.
+
+### What `problems` reports
+
+- Unrecognised property keys, which are otherwise silently ignored.
+- Rates that could not be parsed, including the ambiguous bare-number case.
+- No rates at all, or no **standard** rate in force today for the supplier country. That second
+  check is deliberately about the standard rate rather than the jurisdiction: a misspelt rate kind
+  (`rates.GB.standrd`) registers the jurisdiction while leaving domestic supplies untaxed.
+- EU rates configured with `ossRegistered` false, so they are inert.
+- `vatNumberValidation` set to `NONE` or `CHECKSUM`, neither of which proves a registration exists.
+- An implausible `rounding.scale`.
+
+## Offline check
+
+Some environments cannot reach Maven Central, which makes `mvn` unusable. `dev/offline-check/`
+compiles the entire plugin against hand-written API stubs and runs the logic assertions with
+nothing but a JDK:
+
+```bash
+dev/offline-check/run.sh
+```
+
+The stubs mirror the signatures in killbill-api 0.54.0, killbill-plugin-api 0.27.3,
+killbill-base-plugin 5.1.9 and killbill-platform 0.41.18. They catch type errors, wrong method
+names and bad call shapes. They are **not** a substitute for building against the real jars, and
+they cannot catch behavioural differences.

@@ -1,0 +1,22 @@
+killbill-vat-plugin
+Copyright 2026 QuidRobo Ltd
+
+This product includes software developed by QuidRobo Ltd.
+
+Portions of this software were derived from, or informed by, the following
+Apache License 2.0 projects:
+
+  killbill-simple-tax-plugin
+  Copyright 2015-2017 Benjamin Gandon
+  https://github.com/bgandon/killbill-simple-tax-plugin
+  The effective-dated rate model and the VAT registration number check-digit
+  rules follow this project's approach.
+
+  killbill-easytax-plugin
+  Copyright 2017 SolarNetwork Foundation
+  https://github.com/SolarNetwork/killbill-easytax-plugin
+  The configuration-swappable resolver pattern follows this project's design.
+
+  Kill Bill
+  Copyright 2010-2026 The Billing Project, LLC
+  https://github.com/killbill/killbill

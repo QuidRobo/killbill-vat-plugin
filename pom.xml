@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  killbill-vat-plugin
+  VAT for SaaS on Kill Bill: UK, EU and rest of world, with automatic place-of-supply
+  determination for electronically supplied services.
+
+  Copyright 2026 QuidRobo Ltd. Licensed under the Apache License, Version 2.0.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      0.146.63 is the parent line for Kill Bill 0.24.x. It resolves killbill-api 0.54.0,
+      killbill-plugin-api 0.27.3, killbill-base-plugin 5.1.9 and targets JDK 11. It is what
+      killbill-avatax-plugin builds against.
+
+      Do NOT move to 0.147.x without also moving the server: that line is the Jakarta / JDK 21
+      Kill Bill 0.25 series and the InvoicePluginApi signatures differ.
+    -->
+    <parent>
+        <groupId>org.kill-bill.billing</groupId>
+        <artifactId>killbill-oss-parent</artifactId>
+        <version>0.146.63</version>
+    </parent>
+
+    <groupId>com.quidrobo.killbill</groupId>
+    <artifactId>killbill-vat-plugin-parent</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>Kill Bill VAT plugin</name>
+    <description>UK and EU VAT for SaaS, with place-of-supply resolution and VAT-compliant invoices</description>
+    <url>https://github.com/QuidRobo/killbill-vat-plugin</url>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <organization>
+        <name>QuidRobo Ltd</name>
+        <url>https://quidrobo.com</url>
+    </organization>
+
+    <scm>
+        <connection>scm:git:git://github.com/QuidRobo/killbill-vat-plugin.git</connection>
+        <developerConnection>scm:git:git@github.com:QuidRobo/killbill-vat-plugin.git</developerConnection>
+        <url>https://github.com/QuidRobo/killbill-vat-plugin</url>
+        <tag>HEAD</tag>
+    </scm>
+
+    <issueManagement>
+        <system>GitHub</system>
+        <url>https://github.com/QuidRobo/killbill-vat-plugin/issues</url>
+    </issueManagement>
+
+    <modules>
+        <module>vat-plugin</module>
+        <module>vat-invoice-formatter</module>
+    </modules>
+
+    <properties>
+        <check.skip-dependency>true</check.skip-dependency>
+        <check.skip-dependency-scope>true</check.skip-dependency-scope>
+        <check.skip-dependency-versions>true</check.skip-dependency-versions>
+        <check.skip-duplicate-finder>true</check.skip-duplicate-finder>
+        <check.skip-enforcer>true</check.skip-enforcer>
+        <check.skip-rat>true</check.skip-rat>
+        <check.skip-spotbugs>true</check.skip-spotbugs>
+        <maven.javadoc.failOnError>false</maven.javadoc.failOnError>
+    </properties>
+</project>
