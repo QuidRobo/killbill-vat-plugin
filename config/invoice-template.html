@@ -1,0 +1,367 @@
+{{!
+  Kill Bill VAT invoice template.
+
+  One file, five cases, driven by the flags killbill-vat-invoice-formatter exposes:
+
+    invoice.domesticVat          VAT at the supplier's own rate. An ordinary home sale.
+    invoice.destinationVat       VAT at the CUSTOMER's country rate: EU B2C under the One Stop
+                                 Shop, or a country with a local registration. The money is that
+                                 country's VAT, not the supplier's, and the invoice says so.
+    invoice.reverseCharge        0%, EU business customer accounts for the VAT itself.
+    invoice.outsideScope         0%, place of supply outside the supplier's country.
+    invoice.zeroRated            0% to a domestic customer, e.g. a fully credited invoice.
+    invoice.vatTreatmentUnknown  No tenant id configured, so the treatment cannot be established
+                                 and no legal statement is made. Fix the deployment.
+
+  invoice.standardVat is still available and is true for domesticVat or destinationVat.
+
+  Without that formatter installed the totals block and VAT summary collapse to nothing, because
+  Mustache skips sections whose key does not resolve. The invoice still renders; it just is not
+  a compliant VAT invoice.
+
+  Upload it in Kaui: your name, top right, Tenant Configuration, Invoice Template, Choose File.
+  Or POST it to /1.0/kb/invoices/template with Content-Type: text/html.
+
+  ----------------------------------------------------------------------------------------
+  FOUR EDITS BEFORE YOU USE THIS. Search for TODO.
+
+    1. The supplier block in the letterhead: name, address, VAT number, company number.
+    2. The same details in the footer.
+    3. The logo. Either set the LOGO_INFO tenant key, which fills {{logo.logo}}, or replace
+       that reference with a data: URI so the invoice needs no external fetch. A data URI is
+       usually the better choice: it renders identically in a browser, in a PDF and in an
+       email client that blocks remote images.
+    4. The wording of the notices below, and the OSS registration number in the letterhead,
+       which only appears on a destination-VAT invoice. Set
+       org.killbill.billing.plugin.vat.formatter.supplierCountry to your own country.
+
+  To name the taxing country in the VAT summary rather than just the rate, set
+    org.killbill.billing.plugin.vat.taxItemDescription = {country} VAT {rate}
+  which turns "VAT 19%" into "DE VAT 19%" on every line and in the summary.
+
+  The "Supply" line under the customer address also assumes electronically supplied services.
+  Change it if you sell something else.
+  ----------------------------------------------------------------------------------------
+}}
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>Invoice {{invoice.invoiceNumber}}</title>
+<style type="text/css">
+  @page { size: A4; margin: 14mm 14mm 16mm 14mm; }
+  body {
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 11px;
+    line-height: 1.45;
+    color: #1f2933;
+    margin: 0;
+    padding: 24px;
+    background: #ffffff;
+  }
+  .sheet { max-width: 760px; margin: 0 auto; }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { vertical-align: top; }
+
+  /* Letterhead */
+  .letterhead td { padding: 0 0 22px 0; }
+  .logo { width: 84px; }
+  .logo img { width: 72px; height: 72px; display: block; }
+  .supplier { text-align: left; }
+  .supplier .name { font-size: 17px; font-weight: 700; letter-spacing: -0.2px; color: #111827; }
+  .supplier .addr { color: #52606d; margin-top: 3px; }
+  .supplier .regs { color: #52606d; margin-top: 6px; }
+  .supplier .regs strong { color: #1f2933; font-weight: 600; }
+
+  .doc-title { text-align: right; white-space: nowrap; }
+  .doc-title .kind {
+    font-size: 19px; font-weight: 700; letter-spacing: 1.4px;
+    text-transform: uppercase; color: #111827;
+  }
+  .doc-title .kind-sub {
+    font-size: 10px; letter-spacing: 1.1px; text-transform: uppercase;
+    color: #2f80c4; font-weight: 700; margin-top: 2px;
+  }
+  .doc-title .meta { margin-top: 8px; color: #52606d; }
+  .doc-title .meta span { display: block; }
+  .doc-title .meta b { color: #1f2933; font-weight: 600; }
+
+  /* Parties */
+  .parties { margin-bottom: 20px; }
+  .parties td { width: 50%; padding-right: 24px; }
+  .label {
+    font-size: 9px; letter-spacing: 1.1px; text-transform: uppercase;
+    color: #7b8794; font-weight: 700; margin-bottom: 5px;
+  }
+  .party-name { font-weight: 600; color: #111827; }
+  .party-line { color: #3e4c59; }
+
+  /* Notice banners */
+  .notice {
+    border-left: 3px solid #2f80c4;
+    background: #f2f7fb;
+    padding: 9px 12px;
+    margin: 0 0 18px 0;
+    color: #26394a;
+  }
+  .notice b { color: #14232f; }
+
+  /* Line items */
+  table.items { margin-bottom: 4px; }
+  table.items th {
+    font-size: 9px; letter-spacing: 0.9px; text-transform: uppercase;
+    color: #52606d; font-weight: 700; text-align: left;
+    border-bottom: 1.5px solid #cbd2d9; padding: 0 8px 6px 0;
+  }
+  table.items td { padding: 9px 8px 9px 0; border-bottom: 1px solid #e4e7eb; }
+  table.items th.num, table.items td.num { text-align: right; padding-right: 0; }
+  table.items th:last-child, table.items td:last-child { padding-right: 0; }
+  .item-desc { font-weight: 600; color: #111827; }
+  .item-sub { color: #7b8794; font-size: 10px; margin-top: 2px; }
+  .period { color: #52606d; white-space: nowrap; }
+
+  /* Totals */
+  .totals { margin-top: 16px; }
+  .totals td { padding: 0; }
+  table.sum { width: 300px; }
+  table.sum td { padding: 5px 0; }
+  table.sum td.k { color: #52606d; }
+  table.sum td.v { text-align: right; font-variant-numeric: tabular-nums; }
+  table.sum tr.rule td { border-top: 1px solid #cbd2d9; padding-top: 0; height: 6px; }
+  table.sum tr.grand td { font-size: 13px; font-weight: 700; color: #111827; padding-top: 7px; }
+  table.sum tr.due td { border-top: 2px solid #1f2933; padding-top: 7px; font-weight: 700; }
+
+  /* VAT summary */
+  .vat-summary { margin-top: 26px; }
+  .vat-summary table { width: 380px; }
+  .vat-summary th {
+    font-size: 9px; letter-spacing: 0.9px; text-transform: uppercase;
+    color: #52606d; font-weight: 700; text-align: left;
+    border-bottom: 1.5px solid #cbd2d9; padding: 0 10px 5px 0;
+  }
+  .vat-summary td { padding: 6px 10px 6px 0; border-bottom: 1px solid #e4e7eb; }
+  .vat-summary th.num, .vat-summary td.num { text-align: right; padding-right: 0; }
+
+  /* Footer */
+  .footer {
+    margin-top: 34px; padding-top: 12px;
+    border-top: 1px solid #e4e7eb;
+    color: #7b8794; font-size: 10px;
+  }
+  .footer b { color: #52606d; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <!-- ================= LETTERHEAD ================= -->
+  <table class="letterhead">
+    <tr>
+      <!-- TODO 3: LOGO_INFO tenant key, or replace with src="data:image/png;base64,..." -->
+      <td class="logo"><img src="{{logo.logo}}" alt="Logo"/></td>
+      <td class="supplier">
+        <!-- TODO 1: your supplier details. -->
+        <div class="name">Your Company Ltd</div>
+        <div class="addr">
+          1 Example Street<br/>
+          Example Town<br/>
+          Countyshire EX1 2AB<br/>
+          United Kingdom
+        </div>
+        <div class="regs">
+          <strong>VAT Reg. No.</strong> GB 000 0000 00<br/>
+          <strong>Company Reg. No.</strong> 00000000 (England &amp; Wales)
+          {{#invoice.destinationVat}}<br/>
+          <strong>OSS Reg. No.</strong> EU000000000{{/invoice.destinationVat}}
+        </div>
+      </td>
+      <td class="doc-title">
+        {{#invoice.domesticVat}}<div class="kind">VAT Invoice</div>{{/invoice.domesticVat}}
+        {{#invoice.destinationVat}}<div class="kind">VAT Invoice</div>
+        <div class="kind-sub">{{invoice.customerCountry}} VAT</div>{{/invoice.destinationVat}}
+        {{^invoice.standardVat}}<div class="kind">Invoice</div>{{/invoice.standardVat}}
+        <div class="meta">
+          <span><b>Invoice number</b> {{invoice.invoiceNumber}}</span>
+          <span><b>Invoice date</b> {{invoice.formattedInvoiceDate}}</span>
+          <span><b>Tax point</b> {{invoice.formattedTaxPointDate}}</span>
+          <span><b>Currency</b> {{invoice.currency}}</span>
+        </div>
+      </td>
+    </tr>
+  </table>
+
+  <!-- ================= PARTIES ================= -->
+  <table class="parties">
+    <tr>
+      <td>
+        <div class="label">Invoice to</div>
+        {{#account.companyName}}<div class="party-name">{{account.companyName}}</div>{{/account.companyName}}
+        <div class="party-line">{{account.name}}</div>
+        {{#account.address1}}<div class="party-line">{{account.address1}}</div>{{/account.address1}}
+        {{#account.address2}}<div class="party-line">{{account.address2}}</div>{{/account.address2}}
+        {{#account.city}}<div class="party-line">{{account.city}}</div>{{/account.city}}
+        {{#account.stateOrProvince}}<div class="party-line">{{account.stateOrProvince}}</div>{{/account.stateOrProvince}}
+        {{#account.postalCode}}<div class="party-line">{{account.postalCode}}</div>{{/account.postalCode}}
+        {{#account.country}}<div class="party-line">{{account.country}}</div>{{/account.country}}
+        {{#invoice.customerVatNumber}}
+        <div class="party-line" style="margin-top:6px;"><b>Customer VAT No.</b> {{invoice.customerVatNumber}}</div>
+        {{/invoice.customerVatNumber}}
+      </td>
+      <td>
+        <div class="label">Supply</div>
+        <div class="party-line">Software as a service, supplied electronically.</div>
+        {{#account.email}}<div class="party-line" style="margin-top:6px;">{{account.email}}</div>{{/account.email}}
+      </td>
+    </tr>
+  </table>
+
+  <!-- ===================== VAT TREATMENT NOTICE =====================
+       At most one of these fires. Between them they cover a supplier selling at home, into the
+       EU under the One Stop Shop, to EU businesses under the reverse charge, and to the rest of
+       the world. TODO 4: check the wording against your own regime and your advisers. -->
+
+  {{#invoice.destinationVat}}
+  <div class="notice">
+    <b>VAT charged in {{invoice.customerCountry}}:</b> this is a supply of electronically
+    supplied services to a non-business customer, so VAT is due in the customer's own country
+    at that country's rate, and is declared through the One Stop Shop. The rate applied is shown
+    against each line and in the VAT summary below.
+  </div>
+  {{/invoice.destinationVat}}
+
+  {{#invoice.reverseCharge}}
+  <div class="notice">
+    <b>Reverse charge:</b> this supply is subject to the reverse charge. VAT is to be accounted
+    for by the recipient. No VAT has been charged by the supplier on this invoice.
+  </div>
+  {{/invoice.reverseCharge}}
+
+  {{#invoice.outsideScope}}
+  <div class="notice">
+    <b>Outside the scope of VAT:</b> the place of supply of these electronically supplied
+    services is outside {{invoice.supplierCountry}}, so no VAT has been charged.
+  </div>
+  {{/invoice.outsideScope}}
+
+  {{#invoice.zeroRated}}
+  <div class="notice">
+    <b>No VAT charged:</b> no VAT has been applied to the charges on this invoice.
+  </div>
+  {{/invoice.zeroRated}}
+
+  {{#invoice.vatTreatmentUnknown}}
+  <div class="notice">
+    <b>No VAT charged</b> on this invoice.
+  </div>
+  {{/invoice.vatTreatmentUnknown}}
+
+  <!-- ================= LINE ITEMS ================= -->
+  <table class="items">
+    <thead>
+      <tr>
+        <th style="width:36%;">Description</th>
+        <th style="width:20%;">Service period</th>
+        <th class="num" style="width:7%;">Qty</th>
+        <th class="num" style="width:13%;">Unit price</th>
+        <th class="num" style="width:8%;">VAT rate</th>
+        <th class="num" style="width:16%;">Amount excl. VAT</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{#invoice.lineItems}}
+      <tr>
+        <td>
+          <div class="item-desc">{{lineDescription}}</div>
+          {{#lineSubDescription}}<div class="item-sub">{{lineSubDescription}}</div>{{/lineSubDescription}}
+        </td>
+        <td class="period">
+          {{formattedStartDate}}{{#formattedEndDate}} to {{formattedEndDate}}{{/formattedEndDate}}
+        </td>
+        <td class="num">{{formattedQuantity}}</td>
+        <td class="num">{{formattedUnitPrice}}</td>
+        <td class="num">{{vatRateLabel}}</td>
+        <td class="num">{{formattedNetAmount}}</td>
+      </tr>
+      {{/invoice.lineItems}}
+    </tbody>
+  </table>
+
+  <!-- ================= TOTALS ================= -->
+  <table class="totals">
+    <tr>
+      <td>&nbsp;</td>
+      <td style="width:300px;">
+        <table class="sum">
+          <tr>
+            <td class="k">Total excluding VAT</td>
+            <td class="v">{{invoice.formattedNetTotal}}</td>
+          </tr>
+          <tr>
+            <td class="k">VAT</td>
+            <td class="v">{{invoice.formattedVatTotal}}</td>
+          </tr>
+          <tr class="rule"><td colspan="2"></td></tr>
+          <tr class="grand">
+            <td>Total including VAT</td>
+            <td class="v">{{invoice.formattedGrandTotal}}</td>
+          </tr>
+          {{#invoice.anyCredit}}
+          <tr>
+            <td class="k">Credit applied</td>
+            <td class="v">{{invoice.formattedCreditTotal}}</td>
+          </tr>
+          {{/invoice.anyCredit}}
+          {{#invoice.anyPayment}}
+          <tr>
+            <td class="k">Paid</td>
+            <td class="v">{{invoice.formattedPaidAmount}}</td>
+          </tr>
+          {{/invoice.anyPayment}}
+          <tr class="due">
+            <td>Amount due</td>
+            <td class="v">{{invoice.formattedBalance}}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <!-- ================= VAT SUMMARY ================= -->
+  {{#invoice.standardVat}}
+  <div class="vat-summary">
+    <div class="label">VAT summary</div>
+    <table>
+      <thead>
+        <tr>
+          <th style="width:44%;">Description</th>
+          <th class="num" style="width:14%;">Rate</th>
+          <th class="num" style="width:21%;">Net</th>
+          <th class="num" style="width:21%;">VAT</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#invoice.vatBreakdown}}
+        <tr>
+          <td>{{description}}</td>
+          <td class="num">{{formattedRate}}</td>
+          <td class="num">{{formattedNetAmount}}</td>
+          <td class="num">{{formattedVatAmount}}</td>
+        </tr>
+        {{/invoice.vatBreakdown}}
+      </tbody>
+    </table>
+  </div>
+  {{/invoice.standardVat}}
+
+  <!-- ================= FOOTER ================= -->
+  <div class="footer">
+    <!-- TODO 2: the same details again. -->
+    <b>Your Company Ltd</b>, 1 Example Street, Example Town, Countyshire EX1 2AB, United Kingdom.
+    Registered in England &amp; Wales, company number 00000000. VAT registration number GB 000 0000 00.
+    {{#invoice.multiCurrency}}
+    <br/>Payment processed in {{invoice.processedCurrency}} at an exchange rate of {{invoice.processedPaymentRate}}.
+    {{/invoice.multiCurrency}}
+  </div>
+
+</div>
+</body>
+</html>
