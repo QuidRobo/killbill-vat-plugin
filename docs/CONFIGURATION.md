@@ -365,17 +365,3 @@ is the quickest way to confirm an inclusive-pricing override is actually taking 
 - A `rounding.mode` that is not symmetric about zero, or is not a rounding mode at all.
 - An implausible `rounding.scale`.
 
-## Offline check
-
-Some environments cannot reach Maven Central, which makes `mvn` unusable. `dev/offline-check/`
-compiles the entire plugin against hand-written API stubs and runs **the same test classes under
-`src/test/java` that `mvn test` runs**, with nothing but a JDK:
-
-```bash
-dev/offline-check/run.sh
-```
-
-The stubs mirror the signatures in killbill-api 0.54.0, killbill-plugin-api 0.27.3,
-killbill-base-plugin 5.1.9 and killbill-platform 0.41.18. They catch type errors, wrong method
-names and bad call shapes. They are **not** a substitute for building against the real jars, and
-they cannot catch behavioural differences.

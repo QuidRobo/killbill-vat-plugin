@@ -24,8 +24,6 @@ hs_err_pid*
 replay_pid*
 
 # Offline check artefacts
-dev/offline-check/stubs/
-dev/offline-check/target/
 target/
 .DS_Store
 .idea

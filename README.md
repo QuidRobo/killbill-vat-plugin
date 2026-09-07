@@ -222,6 +222,11 @@ same command.
 
 ## Install
 
+Two bundles: the tax plugin, and the invoice formatter. Both are optional to each other. The tax
+plugin computes VAT with no formatter installed; the formatter only changes how invoices render.
+
+**From a shell, if you have filesystem access to the server:**
+
 ```bash
 mvn clean install
 
@@ -233,6 +238,30 @@ kpm install_java_plugin killbill-vat-formatter \
   --from-source-file=vat-invoice-formatter/target/killbill-vat-invoice-formatter-1.0.0-SNAPSHOT.jar \
   --destination=/var/lib/killbill/bundles
 ```
+
+**From Kaui, if you do not** (hosted Kill Bill, containers, anything where you cannot drop a file
+on disk). Kaui's *Upload plugin* form takes an HTTPS URI, so publish a GitHub release and give it
+the asset URL. `.github/workflows/release.yml` does that on a version tag and prints the exact
+values to paste.
+
+| Field | Tax plugin | Formatter |
+|---|---|---|
+| Plugin key | `killbill-vat` | `killbill-vat-formatter` |
+| Version | e.g. `1.0.0` | e.g. `1.0.0` |
+| URI | release asset URL | release asset URL |
+| Type | Java | Java |
+
+> **Use those plugin keys, not the artifact names.** Per-tenant configuration is stored under
+> `PLUGIN_CONFIG_<pluginName>`, where `pluginName` is the name the activator registers:
+> **`killbill-vat`**. Install it under `killbill-vat-plugin` (the jar's name) and Kaui will show
+> you that, Kill Bill's own docs will tell you the upload path segment is "the name on the
+> filesystem", and your configuration will land in a key nothing reads. The plugin then runs on
+> defaults, which means no rates, which means every supply resolves to `OUTSIDE_SCOPE` at 0%.
+> `GET /config` reports the key it actually read, so check there rather than guessing.
+
+On a platform with an ephemeral filesystem, such as Railway or any plain container deploy, a UI
+install disappears at the next deploy. See [deploy/README.md](deploy/README.md) for baking the
+bundles into an image, and for the environment-variable form of the properties below.
 
 Kill Bill configuration:
 
@@ -263,11 +292,36 @@ curl -X POST \
   -H 'X-Killbill-ApiKey: <key>' -H 'X-Killbill-ApiSecret: <secret>' \
   -H 'X-Killbill-CreatedBy: admin' \
   -H 'Content-Type: text/plain' \
-  --data-binary @vat-plugin/src/main/resources/vat.example.properties \
+  --data-binary @config/vat-uk-only.properties \
   http://127.0.0.1:8080/1.0/kb/tenants/uploadPluginConfig/killbill-vat
 ```
 
 Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## The invoice template
+
+`config/invoice-template.html` is a Mustache template covering five cases from one file, driven by
+flags the formatter exposes:
+
+| Flag | Case |
+|---|---|
+| `invoice.domesticVat` | VAT at the supplier's own rate. An ordinary home sale. |
+| `invoice.destinationVat` | VAT at the **customer's** country rate: EU B2C under the One Stop Shop, or a country with a local registration. The money is that country's VAT, and the invoice says so. |
+| `invoice.reverseCharge` | 0%, business customer accounts for the VAT, their number printed. |
+| `invoice.outsideScope` | 0%, place of supply outside the supplier's country. |
+| `invoice.zeroRated` | 0% to a domestic customer, e.g. a fully credited invoice. |
+| `invoice.vatTreatmentUnknown` | The formatter could not read the account, so no legal statement is made. Fix `formatter.tenantId`. |
+
+Edit the supplier block, the footer, the logo and the notice wording (search for `TODO`), then
+upload it. Kaui: Tenant Configuration, Invoice Template. Or `POST /1.0/kb/invoices/template` with
+`Content-Type: text/html`. The template is not stored per locale; translations are separate.
+
+Set `taxItemDescription = {country} VAT {rate}` so the VAT summary names the taxing country rather
+than just the rate, which is what makes an EU invoice readable.
+
+**Upload it last.** Mustache silently skips sections whose key does not resolve, so a template
+uploaded before the formatter is installed renders with no totals block, no VAT summary and no
+notices. It looks broken rather than erroring.
 
 ## Customer data
 
@@ -292,16 +346,8 @@ number checks) has no Kill Bill dependencies, so it is tested directly:
 mvn test
 ```
 
-Because the build needs Maven Central and some environments cannot reach it, there is also an
-offline check that compiles the whole plugin against hand-written API stubs and runs **the same
-test classes** with nothing but a JDK:
-
-```bash
-dev/offline-check/run.sh
-```
-
-That is a compile and logic check, not a substitute for building against the real jars: the stubs
-mirror the API signatures, not the behaviour behind them.
+57 tests in the tax plugin, 3 in the formatter. They run as part of `mvn clean install`, so a
+contributor cannot get a green build having tested nothing.
 
 Two things the tests deliberately do not cover, because both need a running Kill Bill rather than
 a mock that would only assert what this plugin already believes:
@@ -309,8 +355,39 @@ a mock that would only assert what this plugin already believes:
 - **The in-place amount rewrite** that makes VAT-inclusive pricing work. It follows from Kill
   Bill's field classification, but no core test exercises it. Verify it on your own server before
   you rely on it, and watch for the `Rewriting VAT-inclusive item` log line.
-- **Invoice rendering.** Install the formatter, render an invoice in each of the four treatments,
+- **Invoice rendering.** Install the formatter, render an invoice in each of the five treatments,
   and check net + VAT equals the total.
+
+## Troubleshooting
+
+Every one of these has been hit for real.
+
+**The bundle installs, then does not start.** Check the Kill Bill log, not Kaui's, for the lines
+after `received START command`. `BundleException: Activator start error` with a
+`NoClassDefFoundError` underneath means a package the bundle needs is not available at runtime.
+The parent pom's trailing `*;resolution:=optional` makes such imports optional, so the bundle
+resolves happily and only fails when the activator touches the class. This is why the plugin
+carries its own copy of `killbill-utils`: `PluginTaxCalculator` references `MultiValueMap`, and
+Kill Bill exports none of `org.killbill.commons.*` to bundles.
+
+**Rates are configured but every supply is `OUTSIDE_SCOPE`.** `GET /config` now tells you which of
+the two causes it is: nothing stored under the key it reads (upload under the plugin name, see the
+Install note above), or stored but cached from before the upload (restart the plugin). The
+per-tenant config is read lazily on first access and then cached until a `TENANT_CONFIG_CHANGE`
+event arrives.
+
+**`/config` or `/simulate` shows settings you never set.** Those endpoints resolve the tenant from
+the `X-Killbill-ApiKey` and `X-Killbill-ApiSecret` headers. Opening the URL in a browser sends
+neither, so you get the *default* configuration rather than your tenant's. The response says so
+explicitly, in a `WARNING` field.
+
+**Invoices render without totals or notices.** The formatter is not installed, or
+`org.killbill.template.invoiceFormatterFactoryPluginName` is not set, so Kill Bill is using its
+stock formatter and none of the keys the template needs resolve.
+
+**The invoice has a heading but no VAT summary after an upgrade.** The template is newer than the
+formatter jar. `domesticVat` and `destinationVat` were added after the first release; a template
+using them against an older formatter renders those sections as nothing.
 
 ## Roadmap
 

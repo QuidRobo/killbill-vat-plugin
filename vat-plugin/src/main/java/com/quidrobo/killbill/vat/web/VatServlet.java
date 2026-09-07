@@ -123,6 +123,29 @@ public class VatServlet extends PluginServlet {
         final VatConfig config = runtime.getConfig();
         out.put("configured", Boolean.TRUE);
         addTenantWarning(out, tenantId);
+
+        // Where the configuration came from, stated rather than inferred. "Uploaded but the
+        // plugin is running on defaults" and "never uploaded" look identical from the outside and
+        // have completely different fixes: restart the plugin, versus upload under this key.
+        final String raw = configurationHandler.getRawTenantConfiguration(tenantId);
+        out.put("configKey", configurationHandler.getConfigKeyName());
+        out.put("tenantConfigFound", Boolean.valueOf(raw != null));
+        if (raw == null && tenantId != null) {
+            out.put("configHint", "Nothing is stored under '" + configurationHandler.getConfigKeyName()
+                                  + "' for this tenant, so the plugin is running on defaults: no"
+                                  + " rates, so every supply resolves to OUTSIDE_SCOPE at 0%."
+                                  + " Upload with POST /1.0/kb/tenants/uploadPluginConfig/"
+                                  + configurationHandler.getConfigKeyName()
+                                          .substring("PLUGIN_CONFIG_".length())
+                                  + " and note that is the PLUGIN name, which may differ from the"
+                                  + " directory the jar is installed in.");
+        } else if (raw != null && config.getRateTable().all().isEmpty()) {
+            out.put("configHint", "Configuration IS stored under '"
+                                  + configurationHandler.getConfigKeyName() + "' but this plugin"
+                                  + " is not using it: the tenant was configured before the upload"
+                                  + " and cached. Restart the plugin to re-read it.");
+        }
+
         out.put("enabled", config.isEnabled());
         out.put("supplierCountry", config.getSupplierCountry());
         out.put("defaultPriceMode", config.getDefaultPriceMode().name());
