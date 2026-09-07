@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <parent>
@@ -22,35 +24,14 @@
     </properties>
 
     <dependencies>
-
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-        </dependency>
-
-        <!--
-          The diagnostic servlet. On oss-parent 0.146.63 this artifact is 4.0.x, which still
-          ships the javax.servlet package; the rename to jakarta.servlet happens in 5.0.0, which
-          is the 0.147.x / Kill Bill 0.25 line.
-        -->
-        <dependency>
-            <groupId>jakarta.servlet</groupId>
-            <artifactId>jakarta.servlet-api</artifactId>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>joda-time</groupId>
-            <artifactId>joda-time</artifactId>
-            <scope>provided</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.felix</groupId>
-            <artifactId>org.apache.felix.framework</artifactId>
-            <scope>provided</scope>
-        </dependency>
         <dependency>
             <groupId>org.kill-bill.billing</groupId>
             <artifactId>killbill-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.kill-bill.billing.plugin</groupId>
+            <artifactId>killbill-plugin-api-invoice</artifactId>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -63,11 +44,6 @@
             <artifactId>killbill-platform-osgi-bundles-lib-killbill</artifactId>
             <scope>provided</scope>
         </dependency>
-        <dependency>
-            <groupId>org.kill-bill.billing.plugin</groupId>
-            <artifactId>killbill-plugin-api-invoice</artifactId>
-            <scope>provided</scope>
-        </dependency>
         <!-- PluginInvoicePluginApi, PluginTaxCalculator, PluginInvoiceItem, the config handlers. -->
         <dependency>
             <groupId>org.kill-bill.billing.plugin.java</groupId>
@@ -77,10 +53,61 @@
             <groupId>org.kill-bill.commons</groupId>
             <artifactId>killbill-clock</artifactId>
         </dependency>
+        <!--
+          Compile scope on purpose, so maven-bundle-plugin inlines it into the bundle.
+
+          PluginTaxCalculator, which VatTaxCalculator extends, references
+          org.killbill.commons.utils.collect.MultiValueMap. killbill-base-plugin declares
+          killbill-utils as provided, so it is not inlined transitively, and Kill Bill does not
+          export org.killbill.commons.* to OSGi bundles: OSGIConfig's default export list carries
+          only org.killbill.commons.health.api and org.killbill.commons.metrics.api. The parent's
+          trailing *;resolution:=optional then turns the unsatisfiable import into an optional
+          one, so the bundle RESOLVES and only fails when the activator touches the class:
+
+            BundleException: Activator start error
+            Caused by: NoClassDefFoundError: org/killbill/commons/utils/collect/MultiValueMap
+              at VatInvoicePluginApi.<init>  (new VatTaxCalculator(...))
+              at VatActivator.start
+
+          Carrying our own copy keeps the plugin installable on a stock Kill Bill. The
+          alternative, telling every adopter to add org.killbill.commons.utils to
+          org.killbill.osgi.system.bundle.export.packages.extra, needs server configuration
+          access that someone on hosted Kill Bill may not have.
+        -->
+        <dependency>
+            <groupId>org.kill-bill.commons</groupId>
+            <artifactId>killbill-utils</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>joda-time</groupId>
+            <artifactId>joda-time</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.felix</groupId>
+            <artifactId>org.apache.felix.framework</artifactId>
+            <scope>provided</scope>
+        </dependency>
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
             <scope>provided</scope>
+        </dependency>
+
+        <!--
+          The diagnostic servlet. On oss-parent 0.146.63 this artifact is 4.0.x, which still
+          ships the javax.servlet package; the rename to jakarta.servlet happens in 5.0.0, which
+          is the 0.147.x / Kill Bill 0.25 line.
+        -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
         </dependency>
         <dependency>
             <groupId>org.testng</groupId>
