@@ -391,8 +391,8 @@ using them against an older formatter renders those sections as nothing.
 
 ## Roadmap
 
-1. ✅ Rates, price modes, treatment resolution, invoice formatter
-2. ✅ Config read-back, simulate and healthcheck endpoints
+1. Rates, price modes, treatment resolution, invoice formatter
+2. Config read-back, simulate and healthcheck endpoints
 3. An **optional** in-plugin VIES client, for adopters with no system upstream of Kill Bill to do
    it. Everyone else should validate where the customer record lives, and set `EXTERNAL`. Whoever
    builds this: make the call asynchronous and cached, never inside `getAdditionalInvoiceItems`,
