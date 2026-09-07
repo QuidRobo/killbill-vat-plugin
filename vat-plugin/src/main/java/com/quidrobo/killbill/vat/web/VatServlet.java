@@ -122,6 +122,7 @@ public class VatServlet extends PluginServlet {
 
         final VatConfig config = runtime.getConfig();
         out.put("configured", Boolean.TRUE);
+        addTenantWarning(out, tenantId);
         out.put("enabled", config.isEnabled());
         out.put("supplierCountry", config.getSupplierCountry());
         out.put("defaultPriceMode", config.getDefaultPriceMode().name());
@@ -170,6 +171,7 @@ public class VatServlet extends PluginServlet {
             return out;
         }
         final VatConfig config = runtime.getConfig();
+        addTenantWarning(out, tenantId);
 
         final String country = param(req, "country", null);
         final String rawVatNumber = param(req, "vatNumber", null);
@@ -257,6 +259,28 @@ public class VatServlet extends PluginServlet {
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Says loudly when a request resolved to no tenant.
+     *
+     * Kill Bill identifies the tenant from the API key and secret headers. Open one of these URLs
+     * in a browser and there are none, so the configuration handler falls back to the default
+     * configuration rather than the tenant's. Reporting that silently is worse than useless: it
+     * shows rates and price modes that are not the ones invoicing will use, so an upload that
+     * worked perfectly looks like it did nothing, and the obvious next move is to "fix" a
+     * configuration that was never broken. Ask how I know.
+     */
+    private static void addTenantWarning(final Map<String, Object> out, final UUID tenantId) {
+        if (tenantId != null) {
+            out.put("tenantId", tenantId.toString());
+            return;
+        }
+        out.put("tenantId", null);
+        out.put("WARNING", "This request carried no tenant, so everything below is the DEFAULT"
+                           + " configuration, NOT any tenant's uploaded configuration. Send the"
+                           + " X-Killbill-ApiKey and X-Killbill-ApiSecret headers to see the"
+                           + " configuration that invoicing will actually use.");
+    }
 
     private void writeJson(final HttpServletResponse resp, final Object body) throws IOException {
         setJsonContentType(resp);

@@ -230,6 +230,31 @@ public class VatInvoiceFormatter extends DefaultInvoiceFormatter {
         return vatTotal.compareTo(BigDecimal.ZERO) != 0;
     }
 
+    /**
+     * VAT charged at the supplier's own country's rate: an ordinary domestic sale.
+     *
+     * Split out from {@link #getDestinationVat()} because the two are different supplies that a
+     * VAT invoice has to describe differently, even though both simply "charge VAT". A UK
+     * supplier selling to a UK customer charges UK VAT and accounts for it on a UK return.
+     */
+    public boolean getDomesticVat() {
+        return getStandardVat() && vatContextAvailable && !isOverseas();
+    }
+
+    /**
+     * VAT charged at the CUSTOMER's country's rate: an EU B2C supply under the One Stop Shop, or
+     * a country where the supplier holds a local registration.
+     *
+     * This is the case that makes an invoice template EU-capable rather than UK-only. The money
+     * collected is German, Spanish or Italian VAT, remitted through OSS or a local registration,
+     * not the supplier's domestic VAT. An invoice that presents it as UK VAT misstates which
+     * authority is owed the money, and the customer's own accountant needs to see which country's
+     * rate was applied.
+     */
+    public boolean getDestinationVat() {
+        return getStandardVat() && vatContextAvailable && isOverseas();
+    }
+
     /** Zero VAT to a VAT-registered customer abroad: the recipient accounts for the VAT. */
     public boolean getReverseCharge() {
         return vatContextAvailable && !getStandardVat() && isOverseas()
