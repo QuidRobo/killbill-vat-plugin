@@ -1,0 +1,78 @@
+name: release
+
+# Builds both bundles at a real version number and attaches them to a GitHub release, so each
+# version has a stable HTTPS URL. That URL is what goes in the URI field of Kill Bill's
+# "Upload plugin" form, which is how the plugin reaches a server you cannot put files on.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build and release, without the leading v (e.g. 1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          # killbill-oss-parent 0.146.63 targets JDK 11, and the bundle runs on the server's JVM.
+          java-version: '11'
+          distribution: temurin
+          cache: maven
+
+      - name: Resolve the version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ inputs.version }}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          fi
+
+      # Stamps the real version into both modules so the jars are named
+      # killbill-vat-plugin-1.0.0.jar rather than -1.0.0-SNAPSHOT.jar, and the OSGi
+      # Bundle-Version matches the tag. The edit is never committed: the repository stays on
+      # SNAPSHOT and only the released artefact carries the number.
+      - name: Stamp the version
+        run: mvn -B -ntp versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+
+      # Tests run here too. A release that fails its own tests should never get a download URL.
+      - name: Build
+        run: mvn -B -ntp clean package
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes \
+            "vat-plugin/target/killbill-vat-plugin-${VERSION}.jar" \
+            "vat-invoice-formatter/target/killbill-vat-invoice-formatter-${VERSION}.jar"
+
+      # Prints exactly what to paste into Kaui, so nobody has to reconstruct the URLs by hand.
+      - name: Values for Kill Bill's Upload plugin form
+        run: |
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}"
+          {
+            echo "## Kaui: Upload plugin"
+            echo
+            echo "Do this twice, once per row. Type is Java for both."
+            echo
+            echo "| Plugin key | Version | URI |"
+            echo "|---|---|---|"
+            echo "| \`killbill-vat\` | \`${VERSION}\` | ${BASE}/killbill-vat-plugin-${VERSION}.jar |"
+            echo "| \`killbill-vat-formatter\` | \`${VERSION}\` | ${BASE}/killbill-vat-invoice-formatter-${VERSION}.jar |"
+            echo
+            echo "On Railway the container filesystem is replaced on every deploy, so this"
+            echo "install does not survive a redeploy unless the bundles directory is a volume."
+            echo "See deploy/README.md."
+          } >> "$GITHUB_STEP_SUMMARY"

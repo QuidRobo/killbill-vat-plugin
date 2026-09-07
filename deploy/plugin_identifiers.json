@@ -1,0 +1,20 @@
+{
+  "killbill-vat": {
+    "plugin_name": "killbill-vat",
+    "language": "java",
+    "group_id": "com.quidrobo.killbill",
+    "artifact_id": "killbill-vat-plugin",
+    "packaging": "jar",
+    "classifier": null,
+    "version": "1.0.0-SNAPSHOT"
+  },
+  "killbill-vat-formatter": {
+    "plugin_name": "killbill-vat-formatter",
+    "language": "java",
+    "group_id": "com.quidrobo.killbill",
+    "artifact_id": "killbill-vat-invoice-formatter",
+    "packaging": "jar",
+    "classifier": null,
+    "version": "1.0.0-SNAPSHOT"
+  }
+}

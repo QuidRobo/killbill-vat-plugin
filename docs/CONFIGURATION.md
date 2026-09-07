@@ -251,7 +251,7 @@ which is what the invoice shows, and what the formatter groups the VAT summary b
 
 The two `legend.*` properties are carried on the resolved `VatTreatment` and returned by
 `GET /simulate`, so a custom formatter or a downstream system can print them. The bundled
-`HtmlInvoiceTemplate.mustache` does **not** read them: Mustache cannot select between wordings,
+`config/invoice-template.html` does **not** read them: Mustache cannot select between wordings,
 so the template holds the UK wording inline and branches on
 `invoice.reverseCharge` / `outsideScope` / `zeroRated` instead. If you change `legend.*`, change
 the template to match, or the invoice and the API will disagree.
