@@ -57,6 +57,7 @@ public final class VatConfig {
     public static final String OUTSIDE_SCOPE_LEGEND = PROPERTY_PREFIX + "legend.outsideScope";
     public static final String TREATMENT_RESOLVER = PROPERTY_PREFIX + "treatmentResolver";
     public static final String ENABLED = PROPERTY_PREFIX + "enabled";
+    public static final String RECORD_ZERO_VAT_ITEMS = PROPERTY_PREFIX + "recordZeroVatItems";
 
     /** The 27 EU member states, used when {@link #EU_COUNTRIES} is not overridden. */
     private static final String DEFAULT_EU_COUNTRIES =
@@ -68,6 +69,7 @@ public final class VatConfig {
             "Outside the scope of UK VAT: place of supply is outside the United Kingdom.";
 
     private final boolean enabled;
+    private final boolean recordZeroVatItems;
     private final String supplierCountry;
     private final PriceMode defaultPriceMode;
     private final Map<String, PriceMode> priceModeByPlan;
@@ -88,12 +90,16 @@ public final class VatConfig {
     private final String outsideScopeLegend;
     private final String treatmentResolverClass;
     private final VatRateTable rateTable;
-    private final List<String> problems;
+    private final List<String> configurationProblems;
+    private final List<String> taxationProblems;
+    /** Precomputed because {@link #getProblems()} sits on a healthcheck that monitoring polls. */
+    private final List<String> allProblems;
 
     public VatConfig(final Properties properties) {
         final Properties p = properties == null ? new Properties() : properties;
 
         this.enabled = !"false".equalsIgnoreCase(get(p, ENABLED, "true"));
+        this.recordZeroVatItems = !"false".equalsIgnoreCase(get(p, RECORD_ZERO_VAT_ITEMS, "true"));
         this.supplierCountry = get(p, SUPPLIER_COUNTRY, "GB").trim().toUpperCase();
         this.defaultPriceMode = PriceMode.parse(get(p, PRICE_MODE, null), PriceMode.EXCLUSIVE);
         this.priceModeByPlan = readPriceModeOverrides(p, PRICE_MODE_PLAN_PREFIX);
@@ -121,7 +127,16 @@ public final class VatConfig {
         this.outsideScopeLegend = get(p, OUTSIDE_SCOPE_LEGEND, DEFAULT_OUTSIDE_SCOPE_LEGEND);
         this.treatmentResolverClass = get(p, TREATMENT_RESOLVER, null);
         this.rateTable = VatRateTable.fromProperties(p, RATES_PREFIX);
-        this.problems = Collections.unmodifiableList(findProblems(p));
+
+        final List<String> configuration = new ArrayList<String>();
+        final List<String> taxation = new ArrayList<String>();
+        findProblems(p, configuration, taxation);
+        this.configurationProblems = Collections.unmodifiableList(configuration);
+        this.taxationProblems = Collections.unmodifiableList(taxation);
+
+        final List<String> all = new ArrayList<String>(configuration);
+        all.addAll(taxation);
+        this.allProblems = Collections.unmodifiableList(all);
     }
 
     // --- accessors --------------------------------------------------------
@@ -129,6 +144,27 @@ public final class VatConfig {
     /** Master switch. When false the plugin returns no items at all. */
     public boolean isEnabled() {
         return enabled;
+    }
+
+    /**
+     * Whether a zero-amount TAX item is emitted for supplies that carry no VAT.
+     *
+     * <p>On by default, and it is what makes the invoice formatter work on a multi tenanted server:
+     * that item carries the VAT treatment, the customer's country and their VAT number through to
+     * whoever renders the invoice, which on Kill Bill 0.24.x is handed no tenant context and can
+     * therefore read nothing for itself. A reverse charge or outside-scope supply produces no other
+     * item, so without this the invoice keeps no record that the question was even asked.
+     *
+     * <p>The item is invisible: the formatter's line items are charges only and the VAT summary
+     * table is gated on a non-zero VAT total.
+     *
+     * <p>This switch exists because emitting an item Kill Bill has never been asked to persist is
+     * the one part of this that cannot be proven outside a running Kill Bill. If a zero-amount TAX
+     * item is ever refused, set this to false and invoices go back to carrying no such item, at the
+     * cost of the treatment legend on zero-VAT supplies. It is a kill switch, not a preference.
+     */
+    public boolean isRecordZeroVatItems() {
+        return recordZeroVatItems;
     }
 
     public String getSupplierCountry() {
@@ -257,12 +293,37 @@ public final class VatConfig {
      * {@code GET /plugins/killbill-vat/config} so they can be seen without generating an invoice.
      */
     public List<String> getProblems() {
-        return problems;
+        return enabled ? allProblems : configurationProblems;
+    }
+
+    /**
+     * Problems with the configuration text itself: keys nothing reads, values that will not
+     * parse, rate periods that overlap.
+     *
+     * <p>True whether or not VAT is switched on, because each one is a statement about what was
+     * uploaded rather than about what invoicing will do. They are still worth reporting to a
+     * tenant with VAT off, because they are exactly what would bite on the day it is switched on.
+     */
+    public List<String> getConfigurationProblems() {
+        return configurationProblems;
+    }
+
+    /**
+     * Problems that exist only because VAT is being charged: no usable rate, an EU treatment the
+     * registration does not support, a VAT number trusted without a check.
+     *
+     * <p>Every one of these asserts something about the VAT that will appear on an invoice, so
+     * none of them is true for a tenant with VAT switched off. Reporting them anyway is how a
+     * business that does not charge VAT ends up with a red healthcheck and instructions to fix a
+     * feature it never asked for.
+     */
+    public List<String> getTaxationProblems() {
+        return taxationProblems;
     }
 
     /** Recognised keys, used to catch typos in uploaded configuration. */
     private static final Set<String> KNOWN_KEYS = Collections.unmodifiableSet(new LinkedHashSet<String>(
-            Arrays.asList("enabled", "supplierCountry", "priceMode", "rounding.scale", "rounding.mode",
+            Arrays.asList("enabled", "recordZeroVatItems", "supplierCountry", "priceMode", "rounding.scale", "rounding.mode",
                           "euCountries", "reverseChargeCountries", "euB2cTreatment",
                           "euB2cUnregisteredTreatment", "ossRegistered", "unknownCountryTreatment",
                           "registeredCountries", "vatNumberValidation", "vatNumberValidation.maxAgeDays",
@@ -273,9 +334,13 @@ public final class VatConfig {
     private static final List<String> KNOWN_PREFIXES = Collections.unmodifiableList(
             Arrays.asList("priceMode.plans.", "priceMode.products.", "rates."));
 
-    private List<String> findProblems(final Properties p) {
-        final List<String> found = new ArrayList<String>();
-
+    /**
+     * Sorts every diagnostic into one of two lists by a single question: does the message claim
+     * something about the VAT that will or will not be charged? If it does it is a taxation
+     * problem and is meaningless with VAT off; if it merely describes the uploaded text it is a
+     * configuration problem and holds either way.
+     */
+    private void findProblems(final Properties p, final List<String> found, final List<String> taxation) {
         for (final String rawKey : p.stringPropertyNames()) {
             if (!rawKey.startsWith(PROPERTY_PREFIX)) {
                 continue;
@@ -321,14 +386,14 @@ public final class VatConfig {
         found.addAll(rateTable.findOverlaps());
 
         if (rateTable.all().isEmpty()) {
-            found.add("No VAT rates are configured, so every supply resolves to OUTSIDE_SCOPE"
-                      + " and no VAT will be charged at all.");
+            taxation.add("No VAT rates are configured, so every supply resolves to OUTSIDE_SCOPE"
+                         + " and no VAT will be charged at all.");
         } else if (rateTable.findRate(supplierCountry, "standard", LocalDate.now()) == null) {
             // Deliberately looks for a standard rate in force today, not merely for the
             // jurisdiction. A misspelt rate kind (rates.GB.standrd) registers the jurisdiction
             // while leaving domestic supplies untaxed, which is exactly the silent failure this
             // whole diagnostic exists to catch.
-            found.add("No standard rate is in force today for the supplier country "
+            taxation.add("No standard rate is in force today for the supplier country "
                       + supplierCountry + ", so domestic supplies will resolve to OUTSIDE_SCOPE"
                       + " and no VAT will be charged on them. Check the rate kind is spelt"
                       + " 'standard' and that its validity dates cover today.");
@@ -337,7 +402,7 @@ public final class VatConfig {
         if (!ossRegistered && euB2cTreatment == VatTreatmentKind.DESTINATION) {
             for (final String country : euCountries) {
                 if (!country.equals(supplierCountry) && rateTable.hasJurisdiction(country)) {
-                    found.add("EU rates are configured and euB2cTreatment is DESTINATION, but"
+                    taxation.add("EU rates are configured and euB2cTreatment is DESTINATION, but"
                               + " ossRegistered is false, so EU consumers will get "
                               + euB2cUnregisteredTreatment + " instead. Set ossRegistered=true once"
                               + " the One Stop Shop registration exists.");
@@ -347,20 +412,20 @@ public final class VatConfig {
         }
 
         if (vatNumberValidation == VatNumberValidationMode.NONE) {
-            found.add("vatNumberValidation is NONE, so any VAT number on file is trusted without"
-                      + " any check and the reverse charge will be applied on it. Use EXTERNAL in"
-                      + " production.");
+            taxation.add("vatNumberValidation is NONE, so any VAT number on file is trusted without"
+                         + " any check and the reverse charge will be applied on it. Use EXTERNAL in"
+                         + " production.");
         } else if (vatNumberValidation == VatNumberValidationMode.CHECKSUM) {
-            found.add("vatNumberValidation is CHECKSUM, which proves the number is well formed but"
-                      + " not that the registration exists. Use EXTERNAL in production.");
+            taxation.add("vatNumberValidation is CHECKSUM, which proves the number is well formed but"
+                         + " not that the registration exists. Use EXTERNAL in production.");
         }
 
         final String configuredMode = get(p, ROUNDING_MODE, "HALF_UP");
         try {
             if (!SYMMETRIC_ROUNDING.contains(RoundingMode.valueOf(configuredMode.trim().toUpperCase()))) {
-                found.add("rounding.mode '" + configuredMode + "' is not symmetric about zero, so a"
-                          + " credit would not reverse the VAT its sale charged. Using HALF_UP."
-                          + " Allowed: HALF_UP, HALF_DOWN, HALF_EVEN.");
+                taxation.add("rounding.mode '" + configuredMode + "' is not symmetric about zero, so a"
+                             + " credit would not reverse the VAT its sale charged. Using HALF_UP."
+                             + " Allowed: HALF_UP, HALF_DOWN, HALF_EVEN.");
             }
         } catch (final RuntimeException e) {
             found.add("rounding.mode '" + configuredMode + "' is not a rounding mode. Using HALF_UP.");
@@ -370,8 +435,6 @@ public final class VatConfig {
             found.add("rounding.scale is " + roundingScale + ", which is almost certainly wrong."
                       + " Currency amounts normally use 2.");
         }
-
-        return found;
     }
 
     // --- parsing ----------------------------------------------------------

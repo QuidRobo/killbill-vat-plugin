@@ -14,13 +14,29 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * The two things the formatter needs that Kill Bill 0.24.x does not hand it.
+ * What the formatter needs that Kill Bill 0.24.x does not hand it.
+ *
+ * <h2>tenantId is a legacy fallback, not a requirement</h2>
  *
  * The 0.24.x {@code InvoiceFormatterFactory} signature carries no {@code TenantContext}, so a
- * formatter cannot look up account custom fields on its own. The tenant id therefore has to be
- * configured. The supplier country is configured for the same reason the calculator makes it
- * configurable: this plugin is not a UK-only plugin, and deciding "overseas" against a hardcoded
- * {@code GB} would silently mislabel every invoice issued by a supplier established anywhere else.
+ * formatter cannot look up account custom fields on its own. That used to mean configuring one
+ * tenant id here, which is wrong on a server hosting more than one tenant, and Kill Bill is multi
+ * tenanted by design.
+ *
+ * <p>It is no longer how this works. The plugin records the VAT treatment, the customer's country
+ * and their VAT number onto each tax item's {@code itemDetails} while it still holds a tenant
+ * context, Kill Bill persists that on {@code invoice_items}, and the formatter reads it back off
+ * the invoice it is handed. No tenant, no configuration, no lookup, and correct for every tenant on
+ * the server. See {@link VatItemDetails}.
+ *
+ * <p>{@link #TENANT_ID_PROPERTY} therefore only affects invoices raised before the plugin began
+ * recording this. Setting it makes those historical invoices render their legend, for the one
+ * tenant named; leaving it unset makes them render without one. Neither choice affects a current
+ * invoice. On a multi tenanted server, leave it unset.
+ *
+ * <p>The supplier country is configured for the reason the calculator makes it configurable: this
+ * plugin is not a UK-only plugin, and deciding "overseas" against a hardcoded {@code GB} would
+ * silently mislabel every invoice issued by a supplier established anywhere else.
  *
  * Both are read from {@code killbill.properties} first and from a JVM system property second, so
  * either deployment style works:

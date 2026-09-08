@@ -31,6 +31,7 @@ import com.quidrobo.killbill.vat.core.PriceMode;
 import com.quidrobo.killbill.vat.core.VatConfig;
 import com.quidrobo.killbill.vat.core.VatConfigurationHandler;
 import com.quidrobo.killbill.vat.core.VatRuntime;
+import com.quidrobo.killbill.vat.core.VatTenantStatus;
 import com.quidrobo.killbill.vat.rates.VatRate;
 import com.quidrobo.killbill.vat.resolve.VatTreatment;
 import com.quidrobo.killbill.vat.resolve.VatTreatmentRequest;
@@ -127,10 +128,23 @@ public class VatServlet extends PluginServlet {
         // Where the configuration came from, stated rather than inferred. "Uploaded but the
         // plugin is running on defaults" and "never uploaded" look identical from the outside and
         // have completely different fixes: restart the plugin, versus upload under this key.
+        final VatTenantStatus status = VatTenantStatus.of(configurationHandler, tenantId);
+        if (tenantId != null) {
+            // Deliberately omitted on a tenantless request. Nothing tenant-specific can be read
+            // without credentials, and printing NOT_CONFIGURED there would answer a question about
+            // the caller's tenant that was never asked, in the most alarming way possible.
+            out.put("mode", status.getMode().name());
+            out.put("modeExplanation", status.getMessage());
+        }
+
         final String raw = configurationHandler.getRawTenantConfiguration(tenantId);
         out.put("configKey", configurationHandler.getConfigKeyName());
         out.put("tenantConfigFound", Boolean.valueOf(raw != null));
-        if (raw == null && tenantId != null) {
+        if (raw == null && tenantId != null && status.isActive()) {
+            // Only when the tenant is registered as an invoice plugin, which is what puts it in
+            // ACTIVE with nothing uploaded. A tenant that has neither uploaded nor registered is
+            // simply not using VAT, and telling it how to upload rates is answering a question
+            // nobody asked.
             out.put("configHint", "Nothing is stored under '" + configurationHandler.getConfigKeyName()
                                   + "' for this tenant, so the plugin is running on defaults: no"
                                   + " rates, so every supply resolves to OUTSIDE_SCOPE at 0%."
@@ -139,12 +153,14 @@ public class VatServlet extends PluginServlet {
                                           .substring("PLUGIN_CONFIG_".length())
                                   + " and note that is the PLUGIN name, which may differ from the"
                                   + " directory the jar is installed in.");
-        } else if (raw != null && config.getRateTable().all().isEmpty()) {
+        } else if (raw != null && config.getRateTable().all().isEmpty() && config.isEnabled()) {
             out.put("configHint", "Configuration IS stored under '"
                                   + configurationHandler.getConfigKeyName() + "' but this plugin"
                                   + " is not using it: the tenant was configured before the upload"
                                   + " and cached. Restart the plugin to re-read it.");
         }
+
+        addInvoicePluginRegistration(out, tenantId, status);
 
         out.put("enabled", config.isEnabled());
         out.put("supplierCountry", config.getSupplierCountry());
@@ -257,28 +273,54 @@ public class VatServlet extends PluginServlet {
 
     private Map<String, Object> healthReport(final UUID tenantId) {
         final Map<String, Object> out = new LinkedHashMap<String, Object>();
-        final VatRuntime runtime = configurationHandler.getRuntime(tenantId);
 
         if (tenantId == null) {
-            // No tenant on the request: the most we can say is that the plugin is running.
+            // No tenant on the request: the most we can say is that the plugin is running. This is
+            // also the shape a container healthcheck sees, since it sends no Kill Bill API
+            // credentials, so it must never depend on any tenant's configuration.
             out.put("healthy", Boolean.TRUE);
-            out.put("message", "killbill-vat is running. Authenticate with a tenant to validate its"
-                               + " configuration.");
-            return out;
-        }
-        if (runtime == null) {
-            out.put("healthy", Boolean.FALSE);
-            out.put("message", "No configuration uploaded for this tenant.");
+            out.put("message", VatTenantStatus.ofUnknownTenant().getMessage());
             return out;
         }
 
-        final List<String> problems = runtime.getConfig().getProblems();
-        out.put("healthy", problems.isEmpty());
-        out.put("enabled", runtime.getConfig().isEnabled());
-        out.put("supplierCountry", runtime.getConfig().getSupplierCountry());
-        out.put("rateCount", runtime.getConfig().getRateTable().all().size());
-        out.put("problems", problems);
+        final VatTenantStatus status = VatTenantStatus.of(configurationHandler, tenantId);
+        out.put("healthy", Boolean.valueOf(status.isHealthy()));
+        out.put("mode", status.getMode().name());
+        out.put("message", status.getMessage());
+
+        final VatRuntime runtime = configurationHandler.getRuntime(tenantId);
+        if (runtime != null) {
+            out.put("enabled", Boolean.valueOf(runtime.getConfig().isEnabled()));
+            out.put("supplierCountry", runtime.getConfig().getSupplierCountry());
+            out.put("rateCount", Integer.valueOf(runtime.getConfig().getRateTable().all().size()));
+        }
+        out.put("problems", status.getProblems());
         return out;
+    }
+
+    /**
+     * Reports whether Kill Bill will actually call this plugin when it builds an invoice.
+     *
+     * Uploading plugin configuration and registering the plugin are two separate steps against two
+     * separate endpoints, and only the first one is discoverable from the plugin's own output.
+     * Skipping the second produces invoices at 0% VAT with a plugin that reports itself perfectly
+     * healthy, so this states it rather than leaving it to be deduced.
+     *
+     * The hint is only attached when the tenant has actually asked for VAT. Not being registered
+     * is the normal, correct state for a tenant that does not want the plugin, and telling that
+     * operator to register it would be telling them to switch on a tax they do not charge.
+     */
+    private void addInvoicePluginRegistration(final Map<String, Object> out,
+                                              final UUID tenantId,
+                                              final VatTenantStatus status) {
+        final Boolean registered = status.getRegisteredAsInvoicePlugin();
+        if (registered == null) {
+            return;
+        }
+        out.put("registeredAsInvoicePlugin", registered);
+        if (!registered.booleanValue() && status.isActive()) {
+            out.put("registrationHint", VatTenantStatus.invoicePluginRegistrationHint());
+        }
     }
 
     // ------------------------------------------------------------------ helpers

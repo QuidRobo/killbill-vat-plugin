@@ -270,19 +270,57 @@ org.killbill.template.invoiceFormatterFactoryPluginName=killbill-vat-formatter
 org.killbill.osgi.system.bundle.export.packages.extra=org.killbill.billing.invoice.template.formatters
 org.killbill.template.invoice.defaultLocale=en_GB
 
-# The formatter reads account custom fields, and Kill Bill 0.24.x hands it no tenant context.
-org.killbill.billing.plugin.vat.formatter.tenantId=<your tenant id>
 org.killbill.billing.plugin.vat.formatter.supplierCountry=GB
 ```
 
-Without `formatter.tenantId` the formatter cannot read the account, so it suppresses the VAT
-treatment legend and the customer VAT number rather than guessing at them. It will not print a
-domestic zero-rating notice on what is really a reverse-charge invoice.
+The formatter needs no tenant id. Kill Bill 0.24.x hands a formatter no `TenantContext`, so it
+cannot read the account, and the old answer was to pin one tenant id in a JVM property. That is
+wrong on a multi-tenant server, which is what Kill Bill is for.
+
+Instead the plugin records the treatment, the customer's country and their VAT number onto each tax
+item's `itemDetails` while it does hold a tenant context. Kill Bill persists that on
+`invoice_items` and returns it with the invoice, and the invoice is what the formatter is handed.
+Every tenant renders correctly with no configuration at all.
+
+`org.killbill.billing.plugin.vat.formatter.tenantId` still exists, but it only affects invoices
+raised before this shipped, and it pins the formatter to the one tenant named. Leave it unset.
 
 The `export.packages.extra` line is **mandatory and easy to miss**. `DefaultInvoiceFormatter`
 lives in a core package that is not exported to OSGi bundles by default, so the import falls
 under the parent pom's trailing `*;resolution:=optional`. Without it the bundle installs cleanly
 and then throws `NoClassDefFoundError` on the first invoice render.
+
+### Register it as an invoice plugin
+
+**If you want VAT, do this or nothing else matters.** Kill Bill only calls an invoice plugin that
+is named in the tenant's `org.killbill.invoice.plugin` property. A plugin that is installed, started, healthy and
+correctly configured but missing from that list is never asked to tax anything: every invoice comes
+out at 0% VAT, nothing appears in the log, and `/simulate` keeps answering correctly the whole time
+because it never touches the invoice pipeline.
+
+```bash
+curl -X POST \
+  -u admin:password \
+  -H 'X-Killbill-ApiKey: <key>' -H 'X-Killbill-ApiSecret: <secret>' \
+  -H 'X-Killbill-CreatedBy: admin' \
+  -H 'Content-Type: text/plain' \
+  -d '{"org.killbill.invoice.plugin":"killbill-vat"}' \
+  http://127.0.0.1:8080/1.0/kb/tenants/uploadPerTenantConfig
+```
+
+Note three traps in that one call:
+
+- `uploadPerTenantConfig` is a **different endpoint** from the `uploadPluginConfig` below. They
+  configure different things and neither one implies the other.
+- The body is JSON, even though the content type is `text/plain`.
+- Each call **replaces the entire per-tenant config**, so include everything already set there.
+  `org.killbill.payment.retry.days` is commonly in the same payload.
+
+In Kaui this is under Tenant, Settings, not the Plugin Config page. `GET /config` reports
+`registeredAsInvoicePlugin`, and `/healthcheck` fails while it is false **for a tenant that has
+asked for VAT**. See [VAT is optional](#vat-is-optional) for what that means.
+
+### Upload the tenant configuration
 
 Then upload the tenant configuration:
 
@@ -298,9 +336,46 @@ curl -X POST \
 
 Full reference: [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
+### VAT is optional
+
+The plugin is installed once for the whole server and Kill Bill is multi tenanted, so being
+installed says nothing about whether any given tenant charges VAT. A tenant that is not VAT
+registered, or that accounts for VAT somewhere else entirely, is an ordinary tenant and needs to do
+nothing at all: leave it out of `org.killbill.invoice.plugin`, upload no configuration, and it will
+never see a tax item.
+
+That case is reported as such rather than as a fault. `/healthcheck` and `/config` both carry a
+`mode`:
+
+| `mode` | What it means | Healthy |
+| --- | --- | --- |
+| `NOT_CONFIGURED` | Nothing uploaded and not registered. This tenant does not use VAT. | yes |
+| `DISABLED` | Opted in, then switched off with `enabled=false`. | yes, unless the configuration text has errors |
+| `ACTIVE` | Opted in and switched on. Every diagnostic applies. | only with no problems |
+| `UNAVAILABLE` | The plugin holds no configuration at all, not even its startup default. A plugin fault. | no |
+
+Two consequences worth stating, because both were wrong before:
+
+- A tenant that never asked for VAT is **not** told that no rates are configured, and is **not**
+  told to register the plugin. Neither sentence is true of it, and a healthcheck that goes red for
+  every tenant not using an optional feature reports nothing useful.
+- A tenant with `enabled=false` still gets diagnostics about the *text* it uploaded, such as a
+  misspelt property key or a rate that will not parse. Those are true whether or not VAT is
+  switched on, and they are exactly what would bite on the day it is switched back on. It does not
+  get the diagnostics that assert something about VAT being charged, because none of them is true.
+
+Switching VAT off for a tenant that has configuration uploaded:
+
+```properties
+org.killbill.billing.plugin.vat.enabled=false
+```
+
+`enabled` defaults to **true**, so a tenant that has uploaded rates keeps charging VAT without
+naming the property. Switching off is always explicit.
+
 ## The invoice template
 
-`config/invoice-template.html` is a Mustache template covering five cases from one file, driven by
+`config/invoice-template.mustache` is a Mustache template covering five cases from one file, driven by
 flags the formatter exposes:
 
 | Flag | Case |
@@ -310,7 +385,7 @@ flags the formatter exposes:
 | `invoice.reverseCharge` | 0%, business customer accounts for the VAT, their number printed. |
 | `invoice.outsideScope` | 0%, place of supply outside the supplier's country. |
 | `invoice.zeroRated` | 0% to a domestic customer, e.g. a fully credited invoice. |
-| `invoice.vatTreatmentUnknown` | The formatter could not read the account, so no legal statement is made. Fix `formatter.tenantId`. |
+| `invoice.vatTreatmentUnknown` | The invoice carries no VAT record, so no legal statement is made. Expected only for invoices raised before the plugin began recording the treatment on the tax item. |
 
 Edit the supplier block, the footer, the logo and the notice wording (search for `TODO`), then
 upload it. Kaui: Tenant Configuration, Invoice Template. Or `POST /1.0/kb/invoices/template` with
@@ -362,6 +437,19 @@ a mock that would only assert what this plugin already believes:
 
 Every one of these has been hit for real.
 
+**Every invoice is £0.00 VAT, but `/simulate` is correct.** The plugin is not registered in the
+tenant's `org.killbill.invoice.plugin`, so Kill Bill never calls it. `/simulate` disagrees because
+it goes straight to the plugin and never near the invoice pipeline, which is exactly what makes
+this one hard to see. `GET /config` reports `registeredAsInvoicePlugin: false` with the fix. See
+"Register it as an invoice plugin" above.
+
+**The invoice says "No VAT charged on this invoice".** That is the template's
+`vatTreatmentUnknown` branch: the invoice carries no VAT record, not that the supply was untaxed.
+On a current deployment it means the plugin never taxed that invoice, so check it is registered in
+`org.killbill.invoice.plugin` rather than reaching for configuration. For an invoice raised before
+the plugin began recording the treatment on the tax item there is nothing to read and nothing to
+fix; re-rendering it will not bring the legend back.
+
 **The bundle installs, then does not start.** Check the Kill Bill log, not Kaui's, for the lines
 after `received START command`. `BundleException: Activator start error` with a
 `NoClassDefFoundError` underneath means a package the bundle needs is not available at runtime.
@@ -391,8 +479,8 @@ using them against an older formatter renders those sections as nothing.
 
 ## Roadmap
 
-1. Rates, price modes, treatment resolution, invoice formatter
-2. Config read-back, simulate and healthcheck endpoints
+1. ✅ Rates, price modes, treatment resolution, invoice formatter
+2. ✅ Config read-back, simulate and healthcheck endpoints
 3. An **optional** in-plugin VIES client, for adopters with no system upstream of Kill Bill to do
    it. Everyone else should validate where the customer record lives, and set `EXTERNAL`. Whoever
    builds this: make the call asynchronous and cached, never inside `getAdditionalInvoiceItems`,

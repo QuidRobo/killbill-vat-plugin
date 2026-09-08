@@ -13,11 +13,41 @@ the default for tenants that have uploaded nothing.
 
 ---
 
+## Before any of this: registering the plugin
+
+Everything on this page configures **how** the plugin taxes. None of it makes Kill Bill *call* the
+plugin. That is a separate per-tenant property, in a separate payload, at a separate endpoint:
+
+```
+POST /1.0/kb/tenants/uploadPerTenantConfig
+Content-Type: text/plain
+
+{"org.killbill.invoice.plugin":"killbill-vat"}
+```
+
+Kill Bill invokes `getAdditionalInvoiceItems` only on plugins named in that CSV list, in order.
+Leave the plugin out of it and every invoice is 0% VAT, with no log line and no failed healthcheck
+to point at it, while `/simulate` continues to return correct answers because it bypasses the
+invoice pipeline entirely. It is the single most expensive way to misconfigure this plugin.
+
+Each call replaces the whole per-tenant config, so send every property that tenant needs in one
+payload:
+
+```
+{"org.killbill.invoice.plugin":"killbill-vat","org.killbill.payment.retry.days":"1,3,5"}
+```
+
+`GET /config` reports `registeredAsInvoicePlugin`, and `GET /healthcheck` returns 503 while it is
+false.
+
+---
+
 ## Core
 
 | Property | Default | Meaning |
 |---|---|---|
-| `enabled` | `true` | Master switch. When false the plugin adds no items at all. |
+| `enabled` | `true` | Master switch. When false the plugin adds no items at all, and stops reporting problems that assert something about VAT being charged. Problems with the configuration text itself, such as a misspelt key or an unparseable rate, are still reported: they are true either way and are what would bite when VAT is switched back on. |
+| `recordZeroVatItems` | `true` | Emit a zero-amount TAX item for supplies that carry no VAT (reverse charge, outside scope, zero rated). That item is what carries the treatment, the customer's country and their VAT number through to the invoice formatter, which on Kill Bill 0.24.x is handed no tenant context and can read nothing for itself. It is invisible on the invoice: line items are charges only and the VAT summary is gated on a non-zero total. A kill switch, not a preference: set it to false only if Kill Bill ever refuses a zero-amount tax item, and accept losing the treatment legend on zero-VAT supplies. |
 | `supplierCountry` | `GB` | Where the supplier is established. Defines a domestic supply. |
 | `treatmentResolver` | built-in | FQCN of a `VatTreatmentResolver`. Needs a public no-arg constructor. A class that fails to load falls back to the default rather than leaving VAT uncharged. |
 
@@ -251,7 +281,7 @@ which is what the invoice shows, and what the formatter groups the VAT summary b
 
 The two `legend.*` properties are carried on the resolved `VatTreatment` and returned by
 `GET /simulate`, so a custom formatter or a downstream system can print them. The bundled
-`config/invoice-template.html` does **not** read them: Mustache cannot select between wordings,
+`config/invoice-template.mustache` does **not** read them: Mustache cannot select between wordings,
 so the template holds the UK wording inline and branches on
 `invoice.reverseCharge` / `outsideScope` / `zeroRated` instead. If you change `legend.*`, change
 the template to match, or the invoice and the API will disagree.
@@ -263,7 +293,7 @@ configuration, because Kill Bill 0.24.x builds a formatter with no tenant contex
 
 | Property | Default | Meaning |
 |---|---|---|
-| `org.killbill.billing.plugin.vat.formatter.tenantId` | none | The tenant whose accounts the formatter may read. **Required.** |
+| `org.killbill.billing.plugin.vat.formatter.tenantId` | none | Legacy. Only affects invoices raised before the plugin began recording the treatment on the tax item, and pins the formatter to one tenant. Leave unset on a multi-tenant server. |
 | `org.killbill.billing.plugin.vat.formatter.supplierCountry` | `GB` | Which country counts as domestic when choosing a legend. |
 
 Without a valid `tenantId` the formatter cannot read the account at all, so it knows neither the
@@ -365,3 +395,14 @@ is the quickest way to confirm an inclusive-pricing override is actually taking 
 - A `rounding.mode` that is not symmetric about zero, or is not a rounding mode at all.
 - An implausible `rounding.scale`.
 
+
+
+## Tenants that do not charge VAT
+
+The plugin is installed once for the whole server, and Kill Bill is multi tenanted. A tenant that
+does not charge VAT configures nothing and is left out of `org.killbill.invoice.plugin`; it never
+sees a tax item and is reported healthy, with `mode` `NOT_CONFIGURED`. Nothing on this page applies
+to it.
+
+`enabled=false` is for the other case: a tenant that has configuration uploaded and wants VAT
+switched off without deleting it. That reports `mode` `DISABLED`, also healthy.

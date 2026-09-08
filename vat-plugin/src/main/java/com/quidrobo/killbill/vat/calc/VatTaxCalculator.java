@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import org.killbill.billing.invoice.api.Invoice;
 import org.killbill.billing.invoice.api.InvoiceApiException;
@@ -102,12 +103,26 @@ public class VatTaxCalculator extends PluginTaxCalculator {
                                                                       config.getRoundingScale(),
                                                                       config.getRoundingMode());
 
-            if (split.getVat().compareTo(BigDecimal.ZERO) != 0) {
-                final InvoiceItem taxItem = buildTaxItem(taxable, invoice.getId(), null,
-                                                         split.getVat(), treatment.getDescription());
-                if (taxItem != null) {
-                    additionalItems.add(taxItem);
-                }
+            // A tax item is now emitted for every taxable charge, including the ones that carry no
+            // VAT. A reverse charge, an outside-scope supply and a zero-rated supply are decisions,
+            // not absences, and until now the invoice recorded no trace of them: the item simply
+            // was not created, so nothing downstream could say why the VAT was zero, or even that
+            // the question had been asked. The zero item is what carries that record.
+            //
+            // It is invisible on the invoice. getLineItems() in the formatter iterates charges
+            // only, and the VAT summary table is gated on a non-zero VAT total, so a zero tax item
+            // adds no row and changes no figure. What it does add is itemDetails, and a second
+            // benefit: the charge now counts as already taxed on a re-run, where before a
+            // zero-rated charge was re-evaluated every time and could acquire VAT retrospectively
+            // if the customer's VAT number changed in between.
+            final InvoiceItem taxItem = taxItemFor(
+                    taxable, invoice.getId(), split.getVat(), treatment,
+                    config.getSupplierCountry(),
+                    customer == null ? null : customer.getTaxCountry(),
+                    customer == null ? null : customer.getVatNumber(),
+                    config.isRecordZeroVatItems());
+            if (taxItem != null) {
+                additionalItems.add(taxItem);
             }
 
             if (priceMode == PriceMode.INCLUSIVE && split.requiresRewrite(taxable.getAmount())) {
@@ -163,7 +178,87 @@ public class VatTaxCalculator extends PluginTaxCalculator {
      * Fields Kill Bill treats as immutable (type, dates, currency, linkedItemId, catalogue names)
      * are echoed back unchanged so the update produces no warnings.
      */
+    /**
+     * The TAX item for one charge, carrying the VAT decision on its {@code itemDetails}.
+     *
+     * <p>Returns null only when there is genuinely nothing to record.
+     *
+     * <h2>Why this does not simply call buildTaxItem</h2>
+     *
+     * {@code PluginTaxCalculator.buildTaxItem} opens with
+     * {@code if (amount == null || ZERO.compareTo(amount) == 0) return null;}. It is built on the
+     * assumption that a tax item exists to carry money, so a zero one is pointless. That is true
+     * right up until the item is also the only place the invoice records WHY no money was charged,
+     * which is exactly what the formatter needs and cannot look up for itself on Kill Bill 0.24.x.
+     *
+     * <p>So the zero case goes to {@code PluginInvoiceItem.createTaxItem} directly, which has no
+     * such check. The paying case still goes through {@code buildTaxItem} so that nothing about
+     * existing behaviour depends on this method getting the framework's own construction right.
+     *
+     * <p>Package-private and static so it can be tested. The zero path is new, and the last version
+     * of it was silently dead for precisely this reason: every test covered the pieces around it
+     * and none covered the call itself.
+     */
+    static InvoiceItem taxItemFor(final InvoiceItem taxable,
+                                  final UUID invoiceId,
+                                  final BigDecimal vat,
+                                  final VatTreatment treatment,
+                                  final String supplierCountry,
+                                  final String customerCountry,
+                                  final String customerVatNumber,
+                                  final boolean recordZeroVatItems) {
+        if (vat == null) {
+            return null;
+        }
+        final boolean carriesVat = vat.compareTo(BigDecimal.ZERO) != 0;
+        if (!carriesVat && !recordZeroVatItems) {
+            return null;
+        }
+
+        // No zero check on this one, unlike PluginTaxCalculator.buildTaxItem, which is the whole
+        // reason it is called directly.
+        final InvoiceItem built =
+                PluginInvoiceItem.createTaxItem(taxable, invoiceId, vat, description(treatment));
+        if (built == null) {
+            return null;
+        }
+        return withItemDetails(built, VatItemDetails.write(treatment, supplierCountry,
+                                                           customerCountry, customerVatNumber));
+    }
+
+    /**
+     * A reverse charge or outside-scope treatment carries no description, because until now it
+     * never produced an item that needed one. "VAT" rather than the framework's "Tax" keeps the
+     * wording consistent with the charging case on any template that does render tax lines.
+     */
+    private static String description(final VatTreatment treatment) {
+        final String described = treatment == null ? null : treatment.getDescription();
+        return described == null || described.trim().isEmpty() ? "VAT" : described;
+    }
+
+    /**
+     * The same item with {@code itemDetails} attached.
+     *
+     * <p>{@code PluginTaxCalculator.buildTaxItem} predates this field and offers no way to set it,
+     * so the built item is copied through the full constructor with the details filled in. Kill
+     * Bill's {@code InvoiceItemModelDao(InvoiceItem)} copies {@code getItemDetails()} verbatim and
+     * {@code invoice_items.item_details} persists it, so what is written here is what the formatter
+     * reads back later.
+     */
+    static InvoiceItem withItemDetails(final InvoiceItem item, final String itemDetails) {
+        if (itemDetails == null || itemDetails.isEmpty()) {
+            return item;
+        }
+        return copy(item, item.getAmount(), itemDetails);
+    }
+
     static InvoiceItem withAmount(final InvoiceItem item, final BigDecimal amount) {
+        return copy(item, amount, item.getItemDetails());
+    }
+
+    private static InvoiceItem copy(final InvoiceItem item,
+                                    final BigDecimal amount,
+                                    final String itemDetails) {
         return new PluginInvoiceItem(item.getId(),
                                      item.getInvoiceItemType(),
                                      item.getInvoiceId(),
@@ -188,7 +283,7 @@ public class VatTaxCalculator extends PluginTaxCalculator {
                                      item.getUsageName(),
                                      item.getPrettyUsageName(),
                                      item.getQuantity(),
-                                     item.getItemDetails(),
+                                     itemDetails,
                                      item.getCreatedDate(),
                                      item.getUpdatedDate());
     }

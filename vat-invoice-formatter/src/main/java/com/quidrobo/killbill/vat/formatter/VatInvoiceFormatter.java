@@ -412,6 +412,18 @@ public class VatInvoiceFormatter extends DefaultInvoiceFormatter {
                 new LinkedHashMap<String, Map<UUID, BigDecimal>>();
 
         for (final InvoiceItem tax : taxItems) {
+            // Zero-VAT tax items are excluded from the summary table on purpose.
+            //
+            // The plugin now emits one for every taxable charge, reverse-charge and outside-scope
+            // supplies included, because that item is what carries the VAT treatment through to
+            // this formatter. They are records, not charges. Letting them through would put a row
+            // reading "VAT 0.00" on any invoice that mixes a standard-rated charge with a
+            // zero-rated one, under whatever description the treatment happened to carry, which on
+            // a zero-rated supply is none at all. The legend below the table already states what
+            // the zero rating is.
+            if (safe(tax.getAmount()).compareTo(BigDecimal.ZERO) == 0) {
+                continue;
+            }
             final String description = (tax.getDescription() == null || tax.getDescription().trim().isEmpty())
                                        ? "VAT" : tax.getDescription().trim();
 
@@ -478,11 +490,23 @@ public class VatInvoiceFormatter extends DefaultInvoiceFormatter {
      * treatment legend is suppressed rather than guessed.
      */
     private CustomerFacts lookupCustomerFacts() {
+        // What the invoice already says about itself, which needs no tenant and no lookup.
+        final CustomerFacts recorded = factsFromTaxItems();
+        if (recorded != null) {
+            return recorded;
+        }
+
         final TenantContext context = tenantContext();
         if (context == null) {
-            logger.warn("{} is not set, so invoice {} cannot be rendered with a VAT treatment"
-                        + " legend or a customer VAT number. Set it in killbill.properties.",
-                        FormatterSettings.TENANT_ID_PROPERTY, invoice.getId());
+            // Only reachable for an invoice whose tax items carry no VAT record, which now means
+            // one raised before the plugin started writing them. Deliberately not an error: the
+            // fix for a current deployment is to let the plugin tax the invoice, not to configure
+            // a tenant id, and telling an operator otherwise sends them to a single-tenant setting
+            // that has no business on a multi tenanted server.
+            logger.info("Invoice {} carries no VAT record on its tax items and {} is not set, so it"
+                        + " renders without a VAT treatment legend. Expected for invoices raised"
+                        + " before the plugin began recording the treatment on the item.",
+                        invoice.getId(), FormatterSettings.TENANT_ID_PROPERTY);
             return CustomerFacts.unavailable();
         }
 
@@ -526,6 +550,63 @@ public class VatInvoiceFormatter extends DefaultInvoiceFormatter {
         return new CustomerFacts(true, vatNumber, country.trim().toUpperCase());
     }
 
+    /**
+     * The customer's country and VAT number as the plugin recorded them on this invoice's tax
+     * items, or null when nothing on the invoice says.
+     *
+     * <p>This is the multi tenant path and the preferred one. The plugin wrote these while holding
+     * a real tenant context; the formatter only has to read them back off an invoice it was handed.
+     *
+     * <p>Null is returned for invoices raised before the plugin started recording this, which is
+     * why the account lookup below still exists: without the fallback, every historical invoice
+     * would silently lose its treatment legend the day this shipped. New invoices never reach it.
+     *
+     * <p>The country must agree across every tax item. One invoice describes one supply to one
+     * customer, so two different countries on it means something is wrong upstream, and rendering
+     * a legal statement off a coin flip is worse than rendering none.
+     */
+    private CustomerFacts factsFromTaxItems() {
+        return factsFrom(taxItems, invoice == null ? null : invoice.getId());
+    }
+
+    /**
+     * Static and package-private so it can be tested without building a whole invoice: this decides
+     * whether a reverse charge legend appears on a legal document, and the disagreement rule below
+     * is too easy to get subtly wrong to leave uncovered.
+     */
+    static CustomerFacts factsFrom(final List<InvoiceItem> taxItems, final UUID invoiceId) {
+        String country = null;
+        String vatNumber = null;
+        boolean found = false;
+
+        if (taxItems == null) {
+            return null;
+        }
+        for (final InvoiceItem tax : taxItems) {
+            if (tax == null) {
+                continue;
+            }
+            final VatItemDetails details = VatItemDetails.parse(tax.getItemDetails());
+            if (details == null || details.getCustomerCountry() == null) {
+                continue;
+            }
+            final String itemCountry = details.getCustomerCountry().trim().toUpperCase();
+            if (found && !itemCountry.equals(country)) {
+                logger.warn("Invoice {} carries tax items for more than one customer country ({}"
+                            + " and {}), so no VAT treatment legend can be stated for it",
+                            invoiceId, country, itemCountry);
+                return null;
+            }
+            found = true;
+            country = itemCountry;
+            if (vatNumber == null) {
+                vatNumber = details.getCustomerVatNumber();
+            }
+        }
+
+        return found ? new CustomerFacts(true, vatNumber, country) : null;
+    }
+
     private TenantContext tenantContext() {
         if (killbillAPI == null || settings.getTenantId() == null) {
             return null;
@@ -546,11 +627,11 @@ public class VatInvoiceFormatter extends DefaultInvoiceFormatter {
     }
 
     /** What could be established about the customer, and whether anything could be at all. */
-    private static final class CustomerFacts {
+    static final class CustomerFacts {
 
-        private final boolean available;
-        private final String vatNumber;
-        private final String country;
+        final boolean available;
+        final String vatNumber;
+        final String country;
 
         private CustomerFacts(final boolean available, final String vatNumber, final String country) {
             this.available = available;
