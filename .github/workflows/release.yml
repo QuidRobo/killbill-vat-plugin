@@ -69,8 +69,15 @@ jobs:
             echo
             echo "| Plugin key | Version | URI |"
             echo "|---|---|---|"
-            echo "| \`killbill-vat\` | \`${VERSION}\` | ${BASE}/killbill-vat-plugin-${VERSION}.jar |"
-            echo "| \`killbill-vat-formatter\` | \`${VERSION}\` | ${BASE}/killbill-vat-invoice-formatter-${VERSION}.jar |"
+            echo "| \`vat\` | \`${VERSION}\` | ${BASE}/killbill-vat-plugin-${VERSION}.jar |"
+            echo "| \`vat-formatter\` | \`${VERSION}\` | ${BASE}/killbill-vat-invoice-formatter-${VERSION}.jar |"
+            echo
+            echo "**The keys have no \`killbill-\` prefix on purpose.** Kaui builds the"
+            echo "configuration name as \`killbill-\` plus the key, so \`vat\` becomes"
+            echo "\`killbill-vat\`, which is what the activator registers. A key of"
+            echo "\`killbill-vat\` becomes \`killbill-killbill-vat\` and the configuration"
+            echo "is stored where nothing reads it: no rates, 0% VAT on every invoice, and"
+            echo "no error anywhere. See the Install section of the README."
             echo
             echo "On Railway the container filesystem is replaced on every deploy, so this"
             echo "install does not survive a redeploy unless the bundles directory is a volume."

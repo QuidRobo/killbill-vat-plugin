@@ -230,14 +230,19 @@ plugin computes VAT with no formatter installed; the formatter only changes how 
 ```bash
 mvn clean install
 
-kpm install_java_plugin killbill-vat \
+kpm install_java_plugin vat --name=killbill-vat \
   --from-source-file=vat-plugin/target/killbill-vat-plugin-1.0.0-SNAPSHOT.jar \
   --destination=/var/lib/killbill/bundles
 
-kpm install_java_plugin killbill-vat-formatter \
+kpm install_java_plugin vat-formatter --name=killbill-vat-formatter \
   --from-source-file=vat-invoice-formatter/target/killbill-vat-invoice-formatter-1.0.0-SNAPSHOT.jar \
   --destination=/var/lib/killbill/bundles
 ```
+
+The plugin **key** is `vat`, without a `killbill-` prefix, and the reason is in the Kaui note
+below. `--name` is optional but worth setting: without it KPM derives the install directory from
+the jar filename, so you end up with a directory called `killbill-vat-plugin` holding a plugin
+called `killbill-vat`, and a third name to keep straight for no benefit.
 
 **From Kaui, if you do not** (hosted Kill Bill, containers, anything where you cannot drop a file
 on disk). Kaui's *Upload plugin* form takes an HTTPS URI, so publish a GitHub release and give it
@@ -246,18 +251,52 @@ values to paste.
 
 | Field | Tax plugin | Formatter |
 |---|---|---|
-| Plugin key | `killbill-vat` | `killbill-vat-formatter` |
+| Plugin key | `vat` | `vat-formatter` |
 | Version | e.g. `1.0.0` | e.g. `1.0.0` |
 | URI | release asset URL | release asset URL |
 | Type | Java | Java |
 
-> **Use those plugin keys, not the artifact names.** Per-tenant configuration is stored under
-> `PLUGIN_CONFIG_<pluginName>`, where `pluginName` is the name the activator registers:
-> **`killbill-vat`**. Install it under `killbill-vat-plugin` (the jar's name) and Kaui will show
-> you that, Kill Bill's own docs will tell you the upload path segment is "the name on the
-> filesystem", and your configuration will land in a key nothing reads. The plugin then runs on
-> defaults, which means no rates, which means every supply resolves to `OUTSIDE_SCOPE` at 0%.
-> `GET /config` reports the key it actually read, so check there rather than guessing.
+> **The key must not start with `killbill-`, because Kaui adds that itself.**
+>
+> Per-tenant configuration is stored under `PLUGIN_CONFIG_<pluginName>`, where `pluginName` is the
+> name the activator registers: **`killbill-vat`**. Kaui does not ask Kill Bill what a plugin is
+> called. It builds the name by string concatenation, in `Kaui::PluginHelper`:
+>
+> ```ruby
+> plugin_name: "killbill-#{plugin_key}",
+> ```
+>
+> So key `vat` gives `killbill-vat` and the configuration lands where the plugin reads it. Key
+> `killbill-vat` gives `killbill-killbill-vat`, which nothing reads: the plugin then runs on
+> defaults, which means no rates, which means every supply resolves to `OUTSIDE_SCOPE` at 0%, on
+> every invoice, silently.
+>
+> This is also why killbill-stripe configures cleanly from the same screen. Its key is `stripe`
+> and its activator name is `killbill-stripe`, so Kaui's convention happens to land exactly right.
+> Kaui's own comment beside that line says the mapping "is a convention we've used over the years
+> and is no way enforced anywhere - it likely won't work for proprietary plugins".
+>
+> Three names are in play and only the first is yours to choose:
+>
+> | | Set by | Controls |
+> |---|---|---|
+> | plugin key, `vat` | you, here or on the KPM command line | the name Kaui derives for configuration |
+> | KPM plugin name, `killbill-vat-plugin` | the jar's artifactId, unless you pass `--name` | the install directory and the Kaui label |
+> | activator `PLUGIN_NAME`, `killbill-vat` | this codebase | the config key and `org.killbill.invoice.plugin` |
+>
+> `curl` is unaffected by any of this. `POST /1.0/kb/tenants/uploadPluginConfig/{pluginName}` uses
+> the path segment verbatim, so there you write `killbill-vat` and nothing rewrites it. If you are
+> ever unsure, `GET /config` reports the key it actually read.
+>
+> Kaui has a second route that also bypasses the convention: **Tenant Configuration, Plugin
+> Config** has a *Manual Entry* checkbox that swaps the dropdown for a free-text field, labelled
+> "as defined in the plugin Activator file". Tick it and type `killbill-vat`.
+>
+> The formatter's key matters less: it reads no per-tenant configuration at all, so nothing of its
+> is stored under a `PLUGIN_CONFIG_` key. Use `vat-formatter` for consistency and so that KPM
+> upgrades and uninstalls address it by a sensible name. Note that its key follows its activator
+> name, `killbill-vat-formatter`, and **not** its artifactId, which is
+> `killbill-vat-invoice-formatter`. The two deliberately differ.
 
 On a platform with an ephemeral filesystem, such as Railway or any plain container deploy, a UI
 install disappears at the next deploy. See [deploy/README.md](deploy/README.md) for baking the
@@ -458,11 +497,33 @@ resolves happily and only fails when the activator touches the class. This is wh
 carries its own copy of `killbill-utils`: `PluginTaxCalculator` references `MultiValueMap`, and
 Kill Bill exports none of `org.killbill.commons.*` to bundles.
 
-**Rates are configured but every supply is `OUTSIDE_SCOPE`.** `GET /config` now tells you which of
-the two causes it is: nothing stored under the key it reads (upload under the plugin name, see the
-Install note above), or stored but cached from before the upload (restart the plugin). The
-per-tenant config is read lazily on first access and then cached until a `TENANT_CONFIG_CHANGE`
-event arrives.
+**Rates are configured but every supply is `OUTSIDE_SCOPE`.** `GET /config` tells you which cause
+it is: nothing stored under the key it reads, or stored but cached from before the upload (restart
+the plugin). The per-tenant config is read lazily on first access and then cached until a
+`TENANT_CONFIG_CHANGE` event arrives.
+
+If nothing is stored, look at what key it actually landed under. On the Kill Bill database:
+
+```sql
+SELECT tenant_record_id, tenant_key, is_active, updated_date
+FROM tenant_kvs WHERE tenant_key LIKE 'PLUGIN_CONFIG%';
+```
+
+| What you see | What happened |
+|---|---|
+| `PLUGIN_CONFIG_killbill-vat` | right key, so check `tenant_record_id` is the tenant you are billing under |
+| `PLUGIN_CONFIG_killbill-killbill-vat` | installed with key `killbill-vat`; Kaui added the prefix again |
+| `PLUGIN_CONFIG_killbill-` | no plugin key at all, so nothing was KPM-installed and `plugin_identifiers.json` has no entry |
+
+See the Kaui note under Install. Three symptoms tell you the plugin is running on defaults rather
+than on the configuration you can see in the Kaui dialog, and they are worth checking together,
+because any one alone is easy to explain away:
+
+- VAT is £0 on a domestic supply that has a rate configured
+- a £0 VAT line is *recorded* on the invoice even though `recordZeroVatItems = false`
+- a VAT-inclusive charge is not rewritten down to net, so the line still shows the gross price
+
+All three are the defaults. None of them are what the uploaded configuration says.
 
 **`/config` or `/simulate` shows settings you never set.** Those endpoints resolve the tenant from
 the `X-Killbill-ApiKey` and `X-Killbill-ApiSecret` headers. Opening the URL in a browser sends
@@ -470,8 +531,27 @@ neither, so you get the *default* configuration rather than your tenant's. The r
 explicitly, in a `WARNING` field.
 
 **Invoices render without totals or notices.** The formatter is not installed, or
-`org.killbill.template.invoiceFormatterFactoryPluginName` is not set, so Kill Bill is using its
-stock formatter and none of the keys the template needs resolve.
+`org.killbill.template.invoiceFormatterFactoryPluginName` is not set or misspelt, so Kill Bill is
+using its stock formatter and none of the keys the template needs resolve.
+
+Expect no help from the log here. `HtmlInvoiceGenerator` looks the name up and falls back without
+a word:
+
+```java
+invoiceFormatterFactory = invoiceFormatterFactoryPluginRegistry.getServiceForName(name);
+if (invoiceFormatterFactory == null) {
+    invoiceFormatterFactory = builtInInvoiceFormatterFactory;
+}
+```
+
+A typo in that property produces a perfectly successful render with the wrong formatter, no
+warning, no error. The name it wants is the activator's, `killbill-vat-formatter`. Being a plain
+JVM property, it is set through `CATALINA_OPTS` and never passes through Kaui or a tenant key, so
+none of the plugin-key confusion above applies to it.
+
+There is a related trap if you leave the property unset: Kill Bill uses the sole registered
+formatter if there is exactly one, and silently reverts to the built-in one the moment a second
+formatter appears, logging only "More than one InvoiceFormatter is configured". Set it explicitly.
 
 **The invoice has a heading but no VAT summary after an upgrade.** The template is newer than the
 formatter jar. `domesticVat` and `destinationVat` were added after the first release; a template
